@@ -58,6 +58,10 @@ export function createBoss(g: Game, defIndex: number, hpMult: number): Enemy {
     rage: 1,
     shieldHits: 0,
     hitCd: new Map<number, number>(),
+    fuseT: -1,
+    ghostT: 0,
+    phaseT: 0,
+    healT: 1.2,
   };
   const bs: BossState = {
     def,
@@ -359,6 +363,31 @@ function executePattern(g: Game, e: Enemy, bs: BossState, id: string, nx: number
       }
       g.spawnParticleBurst(e.x, e.y, '#ff6d6d', 14, 180, 3);
       g.audio.sfx('charge');
+      break;
+    }
+    case 'mines': {
+      // seed a drifting minefield between the boss and its prey
+      const count = 7;
+      const aim = Math.atan2(p.y - e.y, p.x - e.x);
+      for (let i = 0; i < count; i++) {
+        if (g.ebullets.length >= MAX_EBULLETS) break;
+        const spread = (i - (count - 1) / 2) * 0.42;
+        const a = aim + spread;
+        const dist = 180 + Math.random() * 320;
+        g.ebullets.push({
+          x: e.x + Math.cos(a) * dist,
+          y: e.y + Math.sin(a) * dist,
+          vx: 0,
+          vy: 0,
+          r: 11,
+          dmg: 18 * dmgS,
+          life: 11,
+          mine: true,
+          armT: 0.9,
+        });
+      }
+      g.spawnParticleBurst(e.x, e.y, '#3dffb8', 16, 150, 3);
+      g.audio.sfx('charge', 0.2);
       break;
     }
     default:

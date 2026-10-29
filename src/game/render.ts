@@ -5,6 +5,7 @@ import type { Enemy, Player } from './types';
 import { TAU, clamp, fmtScore, fmtTime } from './utils';
 import { WEAPONS, WORLD_H, WORLD_W } from './content';
 import { drawMenus, drawLevelUpCards } from './renderUI';
+import { skinOf } from './skins';
 
 const MONO = `ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace`;
 
@@ -139,6 +140,8 @@ export class Renderer {
       case 'title':
       case 'perks':
       case 'help':
+      case 'pass':
+      case 'market':
         drawMenus(this, g);
         break;
       case 'playing':
@@ -310,6 +313,31 @@ export class Renderer {
 
     // enemy bullets
     for (const b of g.ebullets) {
+      if (b.mine) {
+        // leviathan proximity mine
+        const armed = (b.armT ?? 0) <= 0;
+        const pulse = 0.65 + Math.sin(this.t * (armed ? 9 : 3)) * 0.3;
+        this.drawGlow(b.x, b.y, b.r * 2.6, armed ? '#3dffb8' : '#1a5a48', armed ? pulse : 0.4);
+        ctx.strokeStyle = armed ? '#3dffb8' : '#2a7a62';
+        ctx.fillStyle = 'rgba(6,20,16,0.9)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * TAU + this.t * 0.8;
+          const px = b.x + Math.cos(a) * b.r;
+          const py = b.y + Math.sin(a) * b.r;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = armed ? '#c9ffe9' : '#3dffb8';
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 3 + pulse * 2, 0, TAU);
+        ctx.fill();
+        continue;
+      }
       this.drawGlow(b.x, b.y, 14, '#ff4d7e', 0.85);
       ctx.fillStyle = '#ffd9e6';
       ctx.beginPath();
@@ -436,15 +464,28 @@ export class Renderer {
     ctx.restore();
   }
 
+  private drawShipSkin(x: number, y: number, angle: number, skinId: string, scale: number): void {
+    const ctx = this.ctx;
+    const skin = skinOf(skinId);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle + Math.PI / 2);
+    ctx.scale(scale, scale);
+    skin.draw(ctx, this.t);
+    ctx.restore();
+  }
+
   private drawPlayer(g: Game): void {
     const ctx = this.ctx;
     const p = g.player;
     const od = p.overdrive > 0;
+    const skin = skinOf(g.meta.data.skinEquipped);
+    const trailCol = od ? '#ffd94d' : skin.trail;
 
     // trail
     for (const tr of p.trail) {
       if (tr.a <= 0) continue;
-      this.drawGlow(tr.x, tr.y, 8 * tr.a, od ? '#ffd94d' : '#4de8ff', tr.a * 0.5);
+      this.drawGlow(tr.x, tr.y, 8 * tr.a, trailCol, tr.a * 0.5);
     }
 
     // frost aura
@@ -466,7 +507,7 @@ export class Renderer {
     }
 
     // glow under ship
-    this.drawGlow(p.x, p.y, 30, od ? '#ffd94d' : '#4de8ff', od ? 0.9 : 0.55);
+    this.drawGlow(p.x, p.y, 30, od ? '#ffd94d' : skin.glow, od ? 0.9 : 0.55);
 
     // overdrive ring
     if (od) {
@@ -475,6 +516,17 @@ export class Renderer {
       ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.arc(p.x, p.y, 24 + Math.sin(this.t * 8) * 3, 0, TAU);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // shield barrier
+    if (p.shield > 0) {
+      ctx.strokeStyle = '#9adcff';
+      ctx.globalAlpha = 0.5 + Math.sin(this.t * 5) * 0.2;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 27 + Math.sin(this.t * 4) * 2, 0, TAU);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
@@ -493,7 +545,7 @@ export class Renderer {
     // blink when hit invuln
     const blink = p.hitInvuln > 0 && Math.floor(this.t * 20) % 2 === 0;
     ctx.globalAlpha = blink ? 0.35 : 1;
-    this.drawShipShape(p.x, p.y, p.facing, od ? '#ffd94d' : '#4de8ff', 1.15);
+    this.drawShipSkin(p.x, p.y, p.facing, skin.id, 1.15);
     // core
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
@@ -662,12 +714,114 @@ export class Renderer {
         }
         break;
       }
+      case 'volatile': {
+        // spiked bomber, blinks faster as the fuse burns
+        const fused = e.fuseT >= 0;
+        const blink = fused && Math.floor(this.t * (10 + (1 - Math.max(e.fuseT, 0)) * 18)) % 2 === 0;
+        ctx.strokeStyle = blink ? '#ffffff' : col;
+        ctx.fillStyle = blink ? 'rgba(255,120,40,0.9)' : 'rgba(20,8,16,0.82)';
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * TAU + e.t * 2;
+          const rr = i % 2 === 0 ? r * 1.25 : r * 0.62;
+          const px = Math.cos(a) * rr;
+          const py = Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // fuse core
+        ctx.fillStyle = blink ? '#ffffff' : '#ffd166';
+        ctx.beginPath();
+        ctx.arc(0, 0, r * (fused ? 0.5 + Math.sin(this.t * 24) * 0.18 : 0.3), 0, TAU);
+        ctx.fill();
+        break;
+      }
+      case 'lancer': {
+        ctx.rotate(angle);
+        // long needle hull
+        ctx.fillStyle = 'rgba(20,8,16,0.82)';
+        ctx.beginPath();
+        ctx.moveTo(r * 1.6, 0);
+        ctx.lineTo(-r * 0.7, r * 0.62);
+        ctx.lineTo(-r * 1.15, 0);
+        ctx.lineTo(-r * 0.7, -r * 0.62);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // charge glow while aiming the heavy bolt
+        if (e.shootTimer < 0.8) {
+          ctx.fillStyle = '#fff6c9';
+          ctx.beginPath();
+          ctx.arc(r * 1.3, 0, 3 + (0.8 - e.shootTimer) * 5, 0, TAU);
+          ctx.fill();
+        }
+        break;
+      }
+      case 'mender': {
+        // ringed caretaker with a rotating cross
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, TAU);
+        ctx.stroke();
+        ctx.save();
+        ctx.rotate(e.t * 1.4);
+        ctx.fillStyle = col;
+        ctx.fillRect(-r * 0.16, -r * 0.7, r * 0.32, r * 1.4);
+        ctx.fillRect(-r * 0.7, -r * 0.16, r * 1.4, r * 0.32);
+        ctx.restore();
+        // heal pulse telegraph
+        if (e.healT < 0.35) {
+          ctx.globalAlpha = 0.6;
+          ctx.strokeStyle = '#6dffb0';
+          ctx.beginPath();
+          ctx.arc(0, 0, r + 8, 0, TAU);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+        break;
+      }
+      case 'phantom': {
+        const ghost = e.ghostT > 0;
+        ctx.globalAlpha = ghost ? 0.3 : 1;
+        // hourglass silhouette
+        ctx.fillStyle = 'rgba(20,8,16,0.82)';
+        ctx.beginPath();
+        ctx.moveTo(-r, -r);
+        ctx.lineTo(r, -r);
+        ctx.lineTo(-r, r);
+        ctx.lineTo(r, r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // phase-glow eye
+        ctx.fillStyle = ghost ? '#ffffff' : col;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * (ghost ? 0.55 : 0.3), 0, TAU);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        break;
+      }
       case 'boss': {
         this.drawBossBody(e, angle);
         break;
       }
     }
     ctx.restore();
+
+    // lancer aim telegraph (world space)
+    if (e.def.shape === 'lancer' && e.shootTimer < 0.8) {
+      const a = Math.atan2(this.g.player.y - e.y, this.g.player.x - e.x);
+      ctx.strokeStyle = 'rgba(255,224,102,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.moveTo(e.x + Math.cos(a) * (e.radius + 6), e.y + Math.sin(a) * (e.radius + 6));
+      ctx.lineTo(e.x + Math.cos(a) * 820, e.y + Math.sin(a) * 820);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     // boss charge telegraph (world space)
     if (e.def.behavior === 'boss' && this.g.bossState && this.g.bossState.windup > 0 && this.g.bossState.windupPattern === 'charge') {
@@ -729,6 +883,39 @@ export class Renderer {
     const windup = !!bs && bs.windup > 0;
     const col = e.flash > 0.4 ? '#ffffff' : windup ? '#ffffff' : e.def.color;
 
+    // THE DREAMING LEVIATHAN — serpentine deep-dweller
+    if (e.phase === 3) {
+      const p = this.g.player;
+      const back = Math.atan2(e.y - p.y, e.x - p.x);
+      // tail segments trailing away from motion
+      ctx.save();
+      ctx.rotate(back);
+      for (let i = 1; i <= 4; i++) {
+        const seg = r * (0.62 - i * 0.1);
+        const off = r * 1.1 + i * r * 0.62;
+        const sway = Math.sin(this.t * 3 - i * 1.1) * (4 + i * 2.4);
+        ctx.globalAlpha = 0.75 - i * 0.14;
+        ctx.strokeStyle = col;
+        ctx.fillStyle = 'rgba(6,20,16,0.9)';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.ellipse(off, sway, seg * 1.5, seg, 0, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      // fins
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(0, side * r * 0.7);
+        ctx.quadraticCurveTo(r * 0.9, side * r * 1.5 + Math.sin(this.t * 4 + side) * 4, r * 0.4, side * r * 2.0);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // rotating outer ring
     ctx.save();
     ctx.rotate(this.t * 0.7);
@@ -740,6 +927,40 @@ export class Renderer {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
+
+    if (e.phase === 3) {
+      // leviathan core: maw of concentric teeth
+      ctx.save();
+      ctx.rotate(-this.t * 0.4);
+      ctx.strokeStyle = col;
+      ctx.fillStyle = 'rgba(6,20,16,0.92)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      for (let ring = 1; ring <= 2; ring++) {
+        ctx.beginPath();
+        const teeth = 10 + ring * 4;
+        for (let i = 0; i < teeth; i++) {
+          const a = (i / teeth) * TAU + this.t * (ring % 2 ? 0.9 : -0.9);
+          const rr = r * (0.3 + ring * 0.24);
+          const px = Math.cos(a) * rr;
+          const py = Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+      ctx.restore();
+      // eye
+      ctx.fillStyle = windup ? '#ffffff' : '#c9ffe9';
+      ctx.beginPath();
+      ctx.arc(Math.cos(aimAngle) * r * 0.3, Math.sin(aimAngle) * r * 0.3, r * 0.18 + (windup ? 3 : 0), 0, TAU);
+      ctx.fill();
+      return;
+    }
 
     // core polygon
     ctx.save();
@@ -812,6 +1033,20 @@ export class Renderer {
       }
       ctx.restore();
     }
+
+    // SEASON ONE chip (below dash pips)
+    const m = g.meta.data;
+    ctx.font = font(10, 700);
+    ctx.fillStyle = '#c9b8ff';
+    const chip = `S1 · LV ${m.passLevel}${m.prime ? ' ★PRIME' : ''}`;
+    ctx.fillText(chip, hx + 48, hy + 52);
+    // bp progress sliver
+    const need = 700 + (m.passLevel - 1) * 45;
+    const frac2 = m.passLevel >= 30 ? 1 : clamp(m.passXp / need, 0, 1);
+    ctx.fillStyle = 'rgba(20,16,40,0.8)';
+    ctx.fillRect(hx + 48, hy + 58, 90, 4);
+    ctx.fillStyle = '#c9b8ff';
+    ctx.fillRect(hx + 48, hy + 58, 90 * frac2, 4);
 
     // ---- score (top-right) ----
     ctx.textAlign = 'right';

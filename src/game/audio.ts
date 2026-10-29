@@ -263,6 +263,20 @@ export class AudioEngine {
         this.tone({ type: 'triangle', f0: 700, f1: 1100, dur: 0.1, vol: 0.08 });
         this.tone({ type: 'triangle', f0: 1100, f1: 1500, dur: 0.12, vol: 0.06, delay: 0.08 });
         break;
+      case 'trade':
+        this.tone({ type: 'triangle', f0: 900, f1: 1400, dur: 0.08, vol: 0.07 });
+        this.tone({ type: 'triangle', f0: 1400, f1: 2100, dur: 0.1, vol: 0.05, delay: 0.06 });
+        this.noise({ dur: 0.06, vol: 0.03, f0: 4000, f1: 2000, delay: 0.1 });
+        break;
+      case 'claim':
+        [660, 880, 1320].forEach((f, i) =>
+          this.tone({ type: 'triangle', f0: f, dur: 0.14, vol: 0.07, delay: i * 0.07 })
+        );
+        break;
+      case 'shieldDown':
+        this.tone({ type: 'sine', f0: 1200, f1: 300, dur: 0.3, vol: 0.14 });
+        this.noise({ dur: 0.2, vol: 0.06, f0: 3000, f1: 600, q: 2 });
+        break;
       case 'error':
         this.tone({ type: 'square', f0: 220, f1: 160, dur: 0.16, vol: 0.07 });
         break;

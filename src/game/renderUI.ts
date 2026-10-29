@@ -1,10 +1,24 @@
-// ===== VOIDPULSE :: screen-space UI (menus, cards) =====
+// ===== VOIDPULSE :: screen-space UI (menus, cards, VOIDPASS, market) =====
 
 import type { Renderer } from './render';
 import type { Game } from './game';
 import { META_PERKS, PASSIVES, WEAPONS } from './content';
 import { fmtScore, fmtTime } from './utils';
 import type { ButtonRect, CardOption } from './types';
+import {
+  BOOSTERS,
+  CONTRACT_POOL,
+  EXCHANGE_CORES,
+  EXCHANGE_PRISMS,
+  PASS_MAX_TIER,
+  PASS_TIERS,
+  PRIME_PRICE,
+  SEASON_NAME,
+  bpXpForTier,
+  contractProgressValue,
+  marketSkins,
+} from './economy';
+import { SKINS, skinOf } from './skins';
 
 const MONO = `ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace`;
 
@@ -79,6 +93,12 @@ export function drawMenus(r: Renderer, g: Game): void {
     case 'help':
       drawHelp(r, g);
       break;
+    case 'pass':
+      drawPass(r, g);
+      break;
+    case 'market':
+      drawMarket(r, g);
+      break;
     case 'paused':
       drawPause(r, g);
       break;
@@ -104,51 +124,76 @@ function drawTitle(r: Renderer, g: Game): void {
   ctx.globalCompositeOperation = 'lighter';
   r.drawGlow(W / 2, H * 0.3, 200 + Math.sin(t * 1.2) * 14, '#1a3a6a', 0.55);
   r.drawGlow(W / 2, H * 0.3, 90, '#4de8ff', 0.12);
+  r.drawGlow(W / 2, H * 0.3, 150 + Math.sin(t * 0.8) * 20, '#3a1a5a', 0.4);
   ctx.globalCompositeOperation = 'source-over';
 
   // logo
   ctx.textAlign = 'center';
   const title = 'VOIDPULSE';
   ctx.font = font(Math.min(84, W / 9), 800);
-  const grad = ctx.createLinearGradient(0, H * 0.18, 0, H * 0.32);
+  const grad = ctx.createLinearGradient(0, H * 0.16, 0, H * 0.3);
   grad.addColorStop(0, '#e8fbff');
   grad.addColorStop(0.5, '#4de8ff');
   grad.addColorStop(1, '#7d5cff');
   ctx.fillStyle = grad;
-  ctx.fillText(title, W / 2, H * 0.28);
+  ctx.fillText(title, W / 2, H * 0.26);
   ctx.font = font(13, 600);
   ctx.fillStyle = '#8fa3c0';
-  ctx.fillText('S U R V I V E   T H E   S W A R M   ·   R I D E   T H E   H E A T', W / 2, H * 0.28 + 30);
+  ctx.fillText('S U R V I V E   T H E   S W A R M   ·   R I D E   T H E   H E A T', W / 2, H * 0.26 + 28);
+
+  // season badge
+  const m = g.meta.data;
+  ctx.font = font(12, 700);
+  ctx.fillStyle = m.prime ? '#ffe066' : '#c9b8ff';
+  ctx.fillText(
+    `◆ ${SEASON_NAME} ◆   SEASON LV ${m.passLevel}${m.prime ? ' · ★ PRIME ACTIVE' : ''}`,
+    W / 2,
+    H * 0.26 + 50
+  );
+  if (m.equippedTitle) {
+    ctx.font = font(11, 600);
+    ctx.fillStyle = '#ffd94d';
+    ctx.fillText(`« ${m.equippedTitle} »`, W / 2, H * 0.26 + 68);
+  }
 
   // menu
   const items: [string, string, string][] = [
     ['title_start', 'START RUN', 'Enter'],
+    ['title_pass', 'VOIDPASS — SEASON 1', 'B'],
+    ['title_market', 'BLACK MARKET', 'N'],
     ['title_perks', 'PERMANENT UPGRADES', 'E'],
     ['title_help', 'HOW TO PLAY', 'H'],
   ];
-  const mw = 340;
+  const mw = 380;
   const mx = (W - mw) / 2;
-  let my = H * 0.44;
+  let my = H * 0.47;
   for (const [id, label, key] of items) {
-    const selected = g.menuIndex === items.findIndex((i) => i[0] === id);
-    const accent = id === 'title_start' ? '#4de8ff' : '#9adcff';
-    button(r, g, id, label, mx, my, mw, 46, accent, 15);
+    const idx = items.findIndex((i) => i[0] === id);
+    const selected = g.menuIndex === idx;
+    const accent = id === 'title_start' ? '#4de8ff' : id === 'title_pass' ? '#c9b8ff' : id === 'title_market' ? '#ffd166' : '#9adcff';
+    button(r, g, id, label, mx, my, mw, 40, accent, 14);
     ctx.font = font(10, 600);
     ctx.textAlign = 'right';
     ctx.fillStyle = selected ? '#ffd94d' : '#5a6a85';
-    ctx.fillText(`[${key}]`, mx + mw + 34, my + 28);
-    my += 58;
+    ctx.fillText(`[${key}]`, mx + mw + 34, my + 25);
+    my += 48;
   }
 
   // stats footer
-  const m = g.meta.data;
   ctx.textAlign = 'center';
   ctx.font = font(12, 600);
   ctx.fillStyle = '#6dff8c';
-  ctx.fillText(`CORES ${m.cores}   ·   BEST ${fmtScore(m.bestScore)}   ·   BEST WAVE ${m.bestWave}   ·   RUNS ${m.runs}${m.endlessUnlocked ? '   ·   ★ ENDLESS UNLOCKED' : ''}`, W / 2, H - 64);
+  ctx.fillText(
+    `CORES ${m.cores}   ·   PRISMS ${m.prisms}   ·   BEST ${fmtScore(m.bestScore)}   ·   BEST WAVE ${m.bestWave}   ·   RUNS ${m.runs}${m.endlessUnlocked ? '   ·   ★ ENDLESS' : ''}`,
+    W / 2,
+    H - 66
+  );
   ctx.font = font(11, 500);
   ctx.fillStyle = '#5a6a85';
-  ctx.fillText('WASD move · SPACE dash · weapons auto-fire · [M] mute', W / 2, H - 40);
+  ctx.fillText('WASD move · SPACE dash · weapons auto-fire · [M] mute', W / 2, H - 44);
+  ctx.font = font(10, 500);
+  ctx.fillStyle = '#3d4a63';
+  ctx.fillText('VOIDPULSE v1.0.0 — SEASON ONE', W / 2, H - 24);
 }
 
 function drawPerks(r: Renderer, g: Game): void {
@@ -263,24 +308,38 @@ function drawHelp(r: Renderer, g: Game): void {
     ['#ffffff', '  Survive 15 waves and kill the final boss to win — then the void opens: ENDLESS mode.'],
     ['#ffffff', '  Earn CORES every run → buy permanent upgrades between runs.'],
     ['#4de8ff', ''],
+    ['#c9b8ff', 'VOIDPASS — SEASON 1'],
+    ['#ffffff', '  Every run earns BP XP toward 30 season tiers with FREE rewards.'],
+    ['#ffffff', '  PRIME adds a second reward per tier — unlock with prisms or the demo purchase.'],
+    ['#ffffff', '  Season CONTRACTS pay bonus BP XP, cores and prisms. Claim them all. [B]'],
+    ['#ffd166', ''],
+    ['#ffd166', 'BLACK MARKET'],
+    ['#ffffff', '  Shipwright: 6 purchasable hulls + 2 PRIME-exclusive skins. [N]'],
+    ['#ffffff', '  Supply Depot: boosters consumed at the start of your next run.'],
+    ['#ffffff', '  Prism Exchange: trade 1,000 cores into 40 prisms. PRIME is 980 prisms.'],
+    ['#4de8ff', ''],
     ['#ff4d7e', 'THREATS'],
-    ['#ffffff', '  Motes swarm. Sprinters zigzag. Spitters keep range and shoot. Splitters divide.'],
-    ['#ffffff', '  Bulwarks shrug off knockback. Warden Orbs encircle you and fire fans.'],
-    ['#ffffff', '  ELITES (orange ring) are 6× tougher with modifiers: Burst / Swift / Shield.'],
-    ['#ffffff', '  Small targets (Motes, Shards, Sprinters) die instantly to a dash.'],
+    ['#ffffff', '  Motes swarm. Sprinters zigzag. Spitters keep range. Splitters divide.'],
+    ['#ffffff', '  VOLATILES blink, then detonate — kill them at range or dash past the blast.'],
+    ['#ffffff', '  LANCERS aim a heavy bolt — break the line or dodge the telegraph.'],
+    ['#ffffff', '  MENDERS heal the swarm — focus them first. PHANTOMS slip out of reality.'],
+    ['#ffffff', '  ELITES (orange ring) are 6× tougher: Burst / Swift / Shield.'],
+    ['#ffffff', '  In ENDLESS, a fourth titan hunts you: THE DREAMING LEVIATHAN sows mines.'],
   ];
-  let y = py + 76;
+  let y = py + 66;
+  ctx.font = font(11, 600);
   for (const [color, line] of lines) {
     if (line === '') {
-      y += 8;
+      y += 6;
       continue;
     }
+    ctx.font = font(line.startsWith('  ') ? 11 : 11.5, line.startsWith('  ') ? 500 : 700);
     ctx.fillStyle = color;
     ctx.fillText(line, px + 26, y);
-    y += line.startsWith('  ') ? 19 : 24;
+    y += line.startsWith('  ') ? 15 : 19;
   }
 
-  button(r, g, 'help_back', 'BACK [ESC]', px + pw / 2 - 110, py + ph - 54, 220, 40, '#9adcff');
+  button(r, g, 'help_back', 'BACK [ESC]', px + pw / 2 - 110, py + ph - 50, 220, 36, '#9adcff');
 }
 
 function drawPause(r: Renderer, g: Game): void {
@@ -346,24 +405,92 @@ function statRow(r: Renderer, x: number, y: number, w: number, label: string, va
   ctx.fillText(value, x + w, y);
 }
 
+function drawRunEndSeason(r: Renderer, g: Game, x: number, y: number, w: number): void {
+  const ctx = r.ctx;
+  const m = g.meta.data;
+  const cy = y;
+  panel(r, x, cy, w, 148, 'rgba(201,184,255,0.5)');
+
+  // header
+  ctx.textAlign = 'left';
+  ctx.font = font(13, 800);
+  ctx.fillStyle = '#c9b8ff';
+  ctx.fillText('VOIDPASS', x + 16, cy + 22);
+  ctx.textAlign = 'right';
+  ctx.font = font(13, 800);
+  ctx.fillStyle = '#ffe066';
+  ctx.fillText(`+${g.bpXpGained} BP XP`, x + w - 16, cy + 22);
+
+  // season bar
+  const bx = x + 16;
+  const bw = w - 32;
+  const need = bpXpForTier(m.passLevel);
+  const frac = m.passLevel >= PASS_MAX_TIER ? 1 : Math.min(1, m.passXp / need);
+  ctx.fillStyle = 'rgba(30,24,60,0.9)';
+  ctx.fillRect(bx, cy + 32, bw, 10);
+  ctx.fillStyle = m.prime ? '#ffe066' : '#c9b8ff';
+  ctx.fillRect(bx + 1, cy + 33, (bw - 2) * frac, 8);
+  ctx.textAlign = 'left';
+  ctx.font = font(10, 700);
+  ctx.fillStyle = '#ffffff';
+  if (g.bpLevelsGained > 0) {
+    ctx.fillText(`SEASON LV ${m.passLevel - g.bpLevelsGained} → ${m.passLevel}`, bx, cy + 58);
+  } else {
+    ctx.fillText(`SEASON LV ${m.passLevel}`, bx, cy + 58);
+  }
+  ctx.textAlign = 'right';
+  ctx.font = font(9.5, 500);
+  ctx.fillStyle = '#8fa3c0';
+  ctx.fillText(m.passLevel >= PASS_MAX_TIER ? 'SEASON COMPLETE' : `${Math.floor(m.passXp)}/${need} to next tier`, bx + bw, cy + 58);
+
+  // rewards gained
+  ctx.textAlign = 'left';
+  ctx.font = font(10, 600);
+  const rewards = g.bpRewards.slice(0, 5).map((rw) => `T${rw.tier}${rw.track === 'prime' ? '★' : ''} ${rw.label}`);
+  if (rewards.length) {
+    ctx.fillStyle = '#6dff8c';
+    ctx.fillText(`UNLOCKED: ${rewards.join(' · ')}`, x + 16, cy + 76);
+  } else {
+    ctx.fillStyle = '#5a6a85';
+    ctx.fillText('no tier rewards yet — keep climbing', x + 16, cy + 76);
+  }
+
+  // contracts
+  let cyy = cy + 94;
+  for (const c of g.contractResults.slice(0, 3)) {
+    ctx.font = font(10.5, 700);
+    ctx.fillStyle = '#ffd94d';
+    ctx.fillText('CONTRACT COMPLETE', x + 16, cyy);
+    ctx.font = font(10.5, 500);
+    ctx.fillStyle = '#dfeeff';
+    ctx.fillText(`${c.desc}  (+${c.bpXp} BP XP${c.reward ? `, ${c.reward}` : ''})`, x + 152, cyy);
+    cyy += 16;
+  }
+  if (g.contractResults.length === 0) {
+    ctx.font = font(9.5, 500);
+    ctx.fillStyle = '#5a6a85';
+    ctx.fillText('contracts in progress — check the VOIDPASS screen [B]', x + 16, cyy);
+  }
+}
+
 function drawGameOver(r: Renderer, g: Game): void {
   const ctx = r.ctx;
   const W = r.viewW;
   const H = r.viewH;
   dim(r, 0.78);
-  const pw = Math.min(520, W - 60);
+  const pw = Math.min(560, W - 60);
   const px = (W - pw) / 2;
-  const py = H * 0.14;
-  const ph = H * 0.62;
+  const ph = Math.min(H * 0.86, 700);
+  const py = (H - ph) / 2;
   panel(r, px, py, pw, ph, 'rgba(255,80,110,0.5)');
 
   ctx.textAlign = 'center';
-  ctx.font = font(36, 800);
+  ctx.font = font(34, 800);
   ctx.fillStyle = '#ff5c5c';
-  ctx.fillText('SIGNAL LOST', W / 2, py + 60);
+  ctx.fillText('SIGNAL LOST', W / 2, py + 52);
 
   const m = g.meta.data;
-  let y = py + 100;
+  let y = py + 86;
   const rows: [string, string, string][] = [
     ['SCORE', fmtScore(g.score), '#ffffff'],
     ['WAVES SURVIVED', String(g.wave), '#9adcff'],
@@ -374,21 +501,25 @@ function drawGameOver(r: Renderer, g: Game): void {
   ];
   for (const [label, value, color] of rows) {
     statRow(r, px + 30, y, pw - 60, label, value, color);
-    y += 30;
+    y += 26;
   }
 
   // cores earned
-  y += 12;
+  y += 8;
   ctx.textAlign = 'center';
-  ctx.font = font(18, 800);
+  ctx.font = font(16, 800);
   ctx.fillStyle = '#6dff8c';
   ctx.fillText(`+${g.coresEarned} CORES EARNED`, W / 2, y);
-  ctx.font = font(12, 600);
+  y += 20;
+  ctx.font = font(11, 600);
   ctx.fillStyle = '#8fa3c0';
-  ctx.fillText(`BANK: ${m.cores} CORES — spend them under PERMANENT UPGRADES`, W / 2, y + 24);
+  ctx.fillText(`BANK: ${m.cores} CORES · ${m.prisms} PRISMS`, W / 2, y);
+
+  // season ceremony
+  drawRunEndSeason(r, g, px + 20, y + 12, pw - 40);
 
   button(r, g, 'over_retry', 'RE-DEPLOY [ENTER]', px + 30, py + ph - 92, pw - 60, 44, '#4de8ff', 16);
-  button(r, g, 'over_title', 'TITLE [T]', px + 30, py + ph - 40, pw - 60, 34, '#9adcff', 13);
+  button(r, g, 'over_title', 'TITLE [T]   ·   VOIDPASS [B]', px + 30, py + ph - 40, pw - 60, 34, '#9adcff', 13);
 }
 
 function drawVictory(r: Renderer, g: Game): void {
@@ -398,26 +529,26 @@ function drawVictory(r: Renderer, g: Game): void {
   dim(r, 0.7);
   const t = r.t;
   ctx.globalCompositeOperation = 'lighter';
-  r.drawGlow(W / 2, H * 0.2, 240 + Math.sin(t * 2) * 20, '#ffd94d', 0.25);
+  r.drawGlow(W / 2, H * 0.16, 240 + Math.sin(t * 2) * 20, '#ffd94d', 0.25);
   ctx.globalCompositeOperation = 'source-over';
 
-  const pw = Math.min(560, W - 60);
+  const pw = Math.min(580, W - 60);
   const px = (W - pw) / 2;
-  const py = H * 0.12;
-  const ph = H * 0.66;
+  const ph = Math.min(H * 0.88, 720);
+  const py = (H - ph) / 2;
   panel(r, px, py, pw, ph, 'rgba(255,217,77,0.55)');
 
   ctx.textAlign = 'center';
-  ctx.font = font(34, 800);
+  ctx.font = font(32, 800);
   ctx.fillStyle = '#ffd94d';
-  ctx.fillText('CORE STABILIZED', W / 2, py + 58);
-  ctx.font = font(13, 600);
+  ctx.fillText('CORE STABILIZED', W / 2, py + 52);
+  ctx.font = font(12, 600);
   ctx.fillStyle = '#dfeeff';
-  ctx.fillText('The Null Sovereign is destroyed. The void recedes… for now.', W / 2, py + 84);
+  ctx.fillText('The Null Sovereign is destroyed. The void recedes… for now.', W / 2, py + 74);
   ctx.fillStyle = '#6dff8c';
-  ctx.fillText('★ ENDLESS MODE UNLOCKED ★', W / 2, py + 108);
+  ctx.fillText('★ ENDLESS MODE UNLOCKED ★', W / 2, py + 94);
 
-  let y = py + 146;
+  let y = py + 122;
   const rows: [string, string, string][] = [
     ['FINAL SCORE', fmtScore(g.score), '#ffffff'],
     ['TIME', fmtTime(g.time), '#9adcff'],
@@ -427,16 +558,359 @@ function drawVictory(r: Renderer, g: Game): void {
   ];
   for (const [label, value, color] of rows) {
     statRow(r, px + 30, y, pw - 60, label, value, color);
-    y += 30;
+    y += 26;
   }
-  y += 10;
+  y += 6;
   ctx.textAlign = 'center';
   ctx.font = font(16, 800);
   ctx.fillStyle = '#6dff8c';
   ctx.fillText(`+${g.coresEarned} CORES EARNED`, W / 2, y);
 
-  button(r, g, 'victory_endless', 'DIVE INTO ENDLESS [C]', px + 30, py + ph - 96, pw - 60, 44, '#ffd94d', 15);
-  button(r, g, 'victory_title', 'TITLE [T]', px + 30, py + ph - 44, pw - 60, 36, '#9adcff', 13);
+  // season ceremony
+  drawRunEndSeason(r, g, px + 20, y + 12, pw - 40);
+
+  button(r, g, 'victory_endless', 'DIVE INTO ENDLESS [C]', px + 30, py + ph - 92, pw - 60, 44, '#ffd94d', 15);
+  button(r, g, 'victory_title', 'TITLE [T]   ·   VOIDPASS [B]', px + 30, py + ph - 40, pw - 60, 36, '#9adcff', 13);
+}
+
+// ================= VOIDPASS (SEASON ONE battle pass) =================
+
+function rewardGlyph(rw: { kind: string; amount?: number; label: string }): { text: string; color: string } {
+  switch (rw.kind) {
+    case 'cores':
+      return { text: `${rw.amount ?? 0}\u25C6`, color: '#6dff8c' };
+    case 'prisms':
+      return { text: `${rw.amount ?? 0}\u25C7`, color: '#c9b8ff' };
+    case 'booster':
+      return { text: 'AMP', color: '#9adcff' };
+    case 'skin':
+      return { text: 'SHIP', color: '#ffd166' };
+    case 'title':
+      return { text: 'TITLE', color: '#ffe066' };
+    default:
+      return { text: '?', color: '#8fa3c0' };
+  }
+}
+
+function drawPass(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.82);
+  const m = g.meta.data;
+
+  // track origin — fixed left rail; right panel takes the remainder
+  function trackX0(): number {
+    return 24;
+  }
+
+  // header
+  ctx.textAlign = 'center';
+  ctx.font = font(26, 800);
+  ctx.fillStyle = '#c9b8ff';
+  ctx.fillText('VOIDPASS', W / 2, 44);
+  ctx.font = font(11, 700);
+  ctx.fillStyle = '#8fa3c0';
+  ctx.fillText(SEASON_NAME, W / 2, 62);
+
+  // balances (top right)
+  ctx.textAlign = 'right';
+  ctx.font = font(13, 700);
+  ctx.fillStyle = '#6dff8c';
+  ctx.fillText(`${m.cores} \u25C6`, W - 24, 34);
+  ctx.fillStyle = '#c9b8ff';
+  ctx.fillText(`${m.prisms} \u25C7`, W - 24, 54);
+
+  // season progress bar
+  const barW = Math.min(640, W - 480);
+  const barX = (W - barW) / 2;
+  const barY = 76;
+  const need = bpXpForTier(m.passLevel);
+  const frac = m.passLevel >= PASS_MAX_TIER ? 1 : Math.min(1, m.passXp / need);
+  ctx.textAlign = 'left';
+  ctx.font = font(14, 800);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(`LV ${m.passLevel}`, barX - 64, barY + 12);
+  ctx.fillStyle = 'rgba(30,24,60,0.9)';
+  ctx.fillRect(barX, barY, barW, 14);
+  ctx.fillStyle = m.prime ? '#ffe066' : '#c9b8ff';
+  ctx.fillRect(barX + 1, barY + 1, (barW - 2) * frac, 12);
+  ctx.strokeStyle = 'rgba(200,180,255,0.4)';
+  ctx.strokeRect(barX + 0.5, barY + 0.5, barW, 14);
+  ctx.textAlign = 'right';
+  ctx.font = font(11, 600);
+  ctx.fillStyle = '#8fa3c0';
+  ctx.fillText(m.passLevel >= PASS_MAX_TIER ? 'SEASON COMPLETE' : `${Math.floor(m.passXp)} / ${need} BP XP`, barX + barW, barY + 11);
+
+  // ---- left: tier track (2 rows of 15) ----
+  const trackW = Math.min(812, W - 470);
+  const cellW = (trackW - 14 * 5) / 15;
+  const cellH = 74;
+  const rows = [0, 1];
+  const trackY0 = 108;
+  for (const row of rows) {
+    for (let i = 0; i < 15; i++) {
+      const tierNum = row * 15 + i + 1;
+      const tier = PASS_TIERS[tierNum - 1];
+      const cx = trackX0() + i * (cellW + 5);
+      const cy = trackY0 + row * (cellH + 8);
+      const unlocked = m.passLevel > tierNum || (m.passLevel === tierNum && m.passXp >= 0 && tierNum < m.passLevel);
+      const claimed = tierNum < m.passLevel;
+      const current = tierNum === m.passLevel;
+      const selected = g.passSelectedTier === tierNum;
+      const primeGot = m.prime;
+
+      // cell bg
+      ctx.fillStyle = selected ? 'rgba(46,36,90,0.95)' : claimed ? 'rgba(16,26,22,0.9)' : 'rgba(12,16,30,0.9)';
+      ctx.fillRect(cx, cy, cellW, cellH);
+      ctx.strokeStyle = selected ? '#ffe066' : current ? '#c9b8ff' : claimed ? 'rgba(109,255,140,0.4)' : 'rgba(90,120,180,0.3)';
+      ctx.lineWidth = selected || current ? 2 : 1;
+      ctx.strokeRect(cx + 0.5, cy + 0.5, cellW, cellH);
+
+      // tier number
+      ctx.textAlign = 'center';
+      ctx.font = font(9, 700);
+      ctx.fillStyle = claimed ? '#6dff8c' : current ? '#ffffff' : '#5a6a85';
+      ctx.fillText(String(tierNum), cx + cellW / 2, cy + 12);
+
+      // free reward glyph
+      const fg = rewardGlyph(tier.free);
+      ctx.font = font(10.5, 700);
+      ctx.fillStyle = claimed ? fg.color : 'rgba(140,160,200,0.45)';
+      ctx.fillText(fg.text, cx + cellW / 2, cy + 30);
+      ctx.font = font(7.5, 500);
+      ctx.fillStyle = claimed ? '#6dff8c' : '#3d4a63';
+      ctx.fillText('FREE', cx + cellW / 2, cy + 40);
+
+      // prime reward glyph
+      const pg = rewardGlyph(tier.prime);
+      ctx.font = font(10.5, 700);
+      ctx.fillStyle = claimed && primeGot ? pg.color : primeGot ? 'rgba(201,184,255,0.5)' : 'rgba(201,184,255,0.28)';
+      ctx.fillText(pg.text, cx + cellW / 2, cy + 57);
+      ctx.font = font(7.5, 500);
+      ctx.fillStyle = claimed && primeGot ? '#ffe066' : '#3d4a63';
+      ctx.fillText(primeGot ? 'PRIME' : 'PRIME', cx + cellW / 2, cy + 67);
+
+      reg(r, g, `tier_select_${tierNum}`, cx, cy, cellW, cellH);
+    }
+  }
+
+  // selected tier detail
+  const selTier = PASS_TIERS[Math.max(0, Math.min(29, g.passSelectedTier - 1))];
+  const detailY = trackY0 + 2 * (cellH + 8) + 6;
+  ctx.textAlign = 'left';
+  ctx.font = font(11, 700);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(`TIER ${selTier.tier}`, trackX0(), detailY + 12);
+  ctx.font = font(10.5, 500);
+  ctx.fillStyle = '#6dff8c';
+  ctx.fillText(`FREE: ${selTier.free.label}`, trackX0() + 70, detailY + 12);
+  ctx.fillStyle = '#ffe066';
+  ctx.fillText(`PRIME: ${selTier.prime.label}`, trackX0() + 330, detailY + 12);
+  ctx.font = font(9.5, 500);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('Rewards auto-claim as you earn BP XP from runs and contracts.', trackX0(), detailY + 30);
+
+  // ---- right: prime panel + contracts ----
+  const rx = trackX0() + trackW + 18;
+  const rw = W - rx - 24;
+
+  // prime panel
+  const primeH = m.prime ? 84 : 150;
+  panel(r, rx, 108, rw, primeH, m.prime ? 'rgba(255,224,102,0.65)' : 'rgba(201,184,255,0.45)');
+  ctx.textAlign = 'center';
+  ctx.font = font(15, 800);
+  ctx.fillStyle = m.prime ? '#ffe066' : '#c9b8ff';
+  ctx.fillText(m.prime ? '\u2605 PRIME ACTIVE \u2605' : 'VOIDPASS PRIME', rx + rw / 2, 134);
+  ctx.font = font(9.5, 500);
+  ctx.fillStyle = '#8fa3c0';
+  if (m.prime) {
+    ctx.fillText('All 30 prime rewards granted on tier-up.', rx + rw / 2, 154);
+    ctx.fillText(m.primeDemo ? 'Unlocked via demo purchase.' : 'Purchased with prisms. Thank you, pilot.', rx + rw / 2, 170);
+  } else {
+    ctx.fillText('Doubles every tier: exclusive skins,', rx + rw / 2, 154);
+    ctx.fillText('titles, boosters and ~1150\u25C7 returned.', rx + rw / 2, 168);
+    button(r, g, 'pass_unlock_prime', `UNLOCK \u2014 ${PRIME_PRICE}\u25C7`, rx + 12, 182, rw - 24, 32, '#c9b8ff', 12);
+    button(r, g, 'pass_demo', 'SIMULATE PURCHASE (DEMO)', rx + 12, 220, rw - 24, 26, '#8fa3c0', 10);
+  }
+
+  // contracts panel
+  const cy0 = 108 + primeH + 14;
+  const chH = H - cy0 - 66;
+  panel(r, rx, cy0, rw, chH, 'rgba(109,255,140,0.35)');
+  ctx.textAlign = 'center';
+  ctx.font = font(13, 800);
+  ctx.fillStyle = '#6dff8c';
+  ctx.fillText('SEASON CONTRACTS', rx + rw / 2, cy0 + 24);
+  ctx.font = font(9, 500);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText(`${m.contractsCleared} cleared`, rx + rw / 2, cy0 + 40);
+
+  let ky = cy0 + 56;
+  for (let i = 0; i < 3; i++) {
+    const id = m.contractSlots[i];
+    const c = CONTRACT_POOL.find((x) => x.id === id);
+    if (!c) {
+      ctx.font = font(10, 500);
+      ctx.fillStyle = '#3d4a63';
+      ctx.fillText('— all contracts cleared —', rx + rw / 2, ky + 24);
+      ky += 52;
+      continue;
+    }
+    const prog = contractProgressValue(m, { wave: m.bestWave, kills: 0, elites: 0, bosses: 0, dashKills: 0, overdrive: 0, score: 0, heals: 0, coresEarned: 0, won: false }, c);
+    const pfrac = Math.min(1, prog / c.target);
+    ctx.textAlign = 'left';
+    ctx.font = font(10.5, 700);
+    ctx.fillStyle = '#dfeeff';
+    const descLines = wrapText(ctx, c.desc, rw - 24, 10.5, 700);
+    let dy = ky + 12;
+    for (const line of descLines.slice(0, 2)) {
+      ctx.fillText(line, rx + 12, dy);
+      dy += 13;
+    }
+    // progress bar
+    ctx.fillStyle = 'rgba(20,30,24,0.9)';
+    ctx.fillRect(rx + 12, dy + 2, rw - 24, 8);
+    ctx.fillStyle = '#6dff8c';
+    ctx.fillRect(rx + 12, dy + 2, (rw - 24) * pfrac, 8);
+    ctx.font = font(9, 600);
+    ctx.fillStyle = '#8fa3c0';
+    ctx.fillText(`${c.metric === 'score' ? fmtScore(Math.floor(prog)) : Math.floor(prog)}/${c.metric === 'score' ? fmtScore(c.target) : c.target}`, rx + 12, dy + 22);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#c9b8ff';
+    ctx.fillText(`+${c.bpXp} BP XP${c.cores ? ` ${c.cores}\u25C6` : ''}${c.prisms ? ` ${c.prisms}\u25C7` : ''}`, rx + rw - 12, dy + 22);
+    ky = dy + 34;
+  }
+
+  button(r, g, 'pass_back', 'BACK [ESC]', rx + rw * 0.1, H - 52, rw * 0.8, 36, '#9adcff', 12);
+}
+
+// ================= BLACK MARKET =================
+
+function drawMarket(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.82);
+  const m = g.meta.data;
+
+  ctx.textAlign = 'center';
+  ctx.font = font(26, 800);
+  ctx.fillStyle = '#ffd166';
+  ctx.fillText('BLACK MARKET', W / 2, 44);
+  ctx.font = font(10, 600);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('EVERYTHING HERE IS EARNABLE IN-GAME — NO REAL MONEY, EVER', W / 2, 62);
+
+  // balances
+  ctx.textAlign = 'right';
+  ctx.font = font(13, 700);
+  ctx.fillStyle = '#6dff8c';
+  ctx.fillText(`${m.cores} \u25C6`, W - 24, 34);
+  ctx.fillStyle = '#c9b8ff';
+  ctx.fillText(`${m.prisms} \u25C7`, W - 24, 54);
+
+  // tabs
+  const tabs = ['SHIPWRIGHT', 'SUPPLY DEPOT', 'PRISM EXCHANGE'];
+  const tabW = 200;
+  let tx = (W - tabW * 3 - 16) / 2;
+  for (let i = 0; i < 3; i++) {
+    const active = g.marketTab === i;
+    button(r, g, `market_tab_${i}`, tabs[i], tx, 84, tabW, 34, active ? '#ffd166' : '#8fa3c0', 12);
+    tx += tabW + 8;
+  }
+
+  const contentY = 136;
+  const contentH = H - contentY - 70;
+
+  if (g.marketTab === 0) {
+    // ---- skins grid 4 x 2 ----
+    const entries = marketSkins(m);
+    const gridW = Math.min(1100, W - 60);
+    const cW = (gridW - 3 * 14) / 4;
+    const cH = (contentH - 14) / 2;
+    const x0 = (W - gridW) / 2;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const cx = x0 + (i % 4) * (cW + 14);
+      const cy = contentY + Math.floor(i / 4) * (cH + 14);
+      const afford = e.currency === 'cores' ? m.cores >= e.price : m.prisms >= e.price;
+      panel(r, cx, cy, cW, cH, e.equipped ? 'rgba(255,217,77,0.8)' : e.owned ? 'rgba(109,255,140,0.5)' : afford ? 'rgba(90,160,255,0.45)' : 'rgba(90,110,150,0.28)');
+      // preview
+      ctx.save();
+      ctx.translate(cx + cW / 2, cy + 46);
+      ctx.scale(1.9, 1.9);
+      skinOf(e.id).draw(ctx, r.t);
+      ctx.restore();
+      // name + rarity
+      ctx.textAlign = 'center';
+      ctx.font = font(12, 800);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(e.name, cx + cW / 2, cy + 88);
+      ctx.font = font(9, 700);
+      ctx.fillStyle = e.color;
+      ctx.fillText(e.rarityLabel, cx + cW / 2, cy + 102);
+      // action
+      if (e.equipped) {
+        ctx.font = font(11, 800);
+        ctx.fillStyle = '#ffd94d';
+        ctx.fillText('\u2605 EQUIPPED', cx + cW / 2, cy + cH - 14);
+        reg(r, g, `skin_equip_${e.id}`, cx, cy, cW, cH); // click = no-op equip
+      } else if (e.owned) {
+        button(r, g, `skin_equip_${e.id}`, 'EQUIP', cx + 14, cy + cH - 36, cW - 28, 26, '#6dff8c', 11);
+      } else {
+        const priceTxt = `${e.price} ${e.currency === 'cores' ? '\u25C6' : '\u25C7'}`;
+        button(r, g, `skin_buy_${e.id}`, afford ? `BUY \u2014 ${priceTxt}` : priceTxt, cx + 14, cy + cH - 36, cW - 28, 26, afford ? '#ffd166' : '#8a97b0', 11);
+      }
+    }
+  } else if (g.marketTab === 1) {
+    // ---- boosters ----
+    const listW = Math.min(760, W - 80);
+    const lx = (W - listW) / 2;
+    let ly = contentY + 6;
+    ctx.textAlign = 'center';
+    ctx.font = font(10.5, 500);
+    ctx.fillStyle = '#8fa3c0';
+    ctx.fillText('Consumables auto-apply to your NEXT run — one of each owned type fires per run.', W / 2, contentY - 6);
+    for (const b of BOOSTERS) {
+      const owned = m.boosters[b.id] ?? 0;
+      const afford = b.currency === 'cores' ? m.cores >= b.price : m.prisms >= b.price;
+      panel(r, lx, ly, listW, 74, afford ? 'rgba(90,160,255,0.45)' : 'rgba(90,110,150,0.28)');
+      ctx.textAlign = 'left';
+      ctx.font = font(14, 800);
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.name, lx + 18, ly + 26);
+      ctx.font = font(10.5, 500);
+      ctx.fillStyle = '#aebdd4';
+      ctx.fillText(b.desc, lx + 18, ly + 45);
+      ctx.font = font(10, 700);
+      ctx.fillStyle = owned > 0 ? '#6dff8c' : '#5a6a85';
+      ctx.fillText(`OWNED: ${owned}`, lx + 18, ly + 62);
+      button(r, g, `booster_buy_${b.id}`, `${b.price} ${b.currency === 'cores' ? '\u25C6' : '\u25C7'}`, lx + listW - 150, ly + 20, 130, 34, afford ? '#ffd166' : '#8a97b0', 12);
+      ly += 86;
+    }
+  } else {
+    // ---- prism exchange ----
+    const pw = Math.min(620, W - 80);
+    const px2 = (W - pw) / 2;
+    const py2 = contentY + 20;
+    panel(r, px2, py2, pw, 190, 'rgba(201,184,255,0.5)');
+    ctx.textAlign = 'center';
+    ctx.font = font(16, 800);
+    ctx.fillStyle = '#c9b8ff';
+    ctx.fillText('PRISM EXCHANGE', W / 2, py2 + 34);
+    ctx.font = font(11, 500);
+    ctx.fillStyle = '#aebdd4';
+    ctx.fillText(`Convert ${EXCHANGE_CORES}\u25C6 CORES into ${EXCHANGE_PRISMS}\u25C7 PRISMS.`, W / 2, py2 + 62);
+    ctx.fillText('A painful rate, but every path to PRIME is earnable through play:', W / 2, py2 + 80);
+    ctx.fillText(`contracts, the free pass track, and this exchange. PRIME costs ${PRIME_PRICE}\u25C7.`, W / 2, py2 + 96);
+    button(r, g, 'exchange_btn', `EXCHANGE ${EXCHANGE_CORES}\u25C6 \u2192 ${EXCHANGE_PRISMS}\u25C7`, px2 + pw / 2 - 170, py2 + 118, 340, 40, '#c9b8ff', 13);
+    ctx.font = font(10, 500);
+    ctx.fillStyle = '#5a6a85';
+    ctx.fillText(`You have ${m.cores}\u25C6 and ${m.prisms}\u25C7.`, W / 2, py2 + 178);
+  }
+
+  button(r, g, 'market_back', 'BACK [ESC]', W / 2 - 110, H - 52, 220, 36, '#9adcff', 12);
 }
 
 // ================= LEVEL-UP CARDS =================

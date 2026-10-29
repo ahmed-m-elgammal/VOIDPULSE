@@ -171,6 +171,7 @@ export function addHeat(g: Game, amount: number): void {
   p.heatIdle = 0;
   if (p.heat >= 100 && p.overdrive <= 0) {
     p.overdrive = 7;
+    g.runOverdrive++;
     g.audio.sfx('heatMax');
     g.addText(p.x, p.y - 40, 'OVERDRIVE!', '#ffd94d', 22, true);
     g.shake(6);
@@ -217,6 +218,29 @@ export function damagePlayer(g: Game, dmg: number, sx: number, sy: number): void
   const p = g.player;
   if (p.hitInvuln > 0 || p.dashInvuln > 0 || p.hp <= 0) return;
   if (g.godMode) return;
+  // Shield Cache barrier: eats the hit whole, keeps heat alive
+  if (p.shield > 0) {
+    p.shield--;
+    p.hitInvuln = 1.1;
+    g.audio.sfx('shieldDown');
+    g.addText(p.x, p.y - 30, 'BARRIER DOWN', '#9adcff', 15, true);
+    g.flashScreen('#9adcff', 0.25);
+    g.shockwaves.push({
+      x: p.x,
+      y: p.y,
+      r: 10,
+      maxR: 150,
+      speed: 620,
+      life: 0.25,
+      maxLife: 0.25,
+      color: '#9adcff',
+      width: 3,
+      dmg: 0,
+      knock: 180,
+      hitIds: new Set<number>(),
+    });
+    return;
+  }
   const real = Math.max(1, Math.round(dmg - p.stats.armor));
   p.hp -= real;
   p.hitInvuln = 0.85;

@@ -384,7 +384,7 @@ export function updateBullets(g: Game, dt: number): void {
         const arr = grid.get(gx + gy * 4096);
         if (!arr) continue;
         for (const e of arr) {
-          if (e.hp <= 0 || e.spawnT > 0) continue;
+          if (e.hp <= 0 || e.spawnT > 0 || e.ghostT > 0) continue;
           const rr = e.radius + b.r;
           const dx = e.x - b.x;
           const dy = e.y - b.y;
@@ -448,6 +448,55 @@ export function updateEBullets(g: Game, dt: number): void {
       b.dead = true;
       continue;
     }
+    if (b.telegraph !== undefined) b.telegraph = Math.max(0, b.telegraph - dt);
+    // leviathan proximity mine: static, arms, then detonates when approached
+    if (b.mine) {
+      if ((b.armT ?? 0) > 0) {
+        b.armT = (b.armT ?? 0) - dt;
+      } else {
+        const dx = p.x - b.x;
+        const dy = p.y - b.y;
+        if (dx * dx + dy * dy < 78 * 78) {
+          b.dead = true;
+          // detonation: burst of shrapnel + shockwave
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * TAU + Math.random();
+            if (g.ebullets.length < MAX_EBULLETS) {
+              g.ebullets.push({
+                x: b.x,
+                y: b.y,
+                vx: Math.cos(a) * 210,
+                vy: Math.sin(a) * 210,
+                r: 5,
+                dmg: b.dmg * 0.6,
+                life: 3,
+              });
+            }
+          }
+          g.shockwaves.push({
+            x: b.x,
+            y: b.y,
+            r: 6,
+            maxR: 120,
+            speed: 640,
+            life: 0.22,
+            maxLife: 0.22,
+            color: '#3dffb8',
+            width: 4,
+            dmg: 0,
+            knock: 260,
+            hitIds: new Set<number>(),
+          });
+          const d2 = Math.hypot(dx, dy);
+          if (d2 < 110) g.damagePlayer(b.dmg, b.x, b.y);
+          g.audio.sfx('explode', 0.2);
+          g.spawnParticleBurst(b.x, b.y, '#3dffb8', 18, 260, 3);
+          g.shake(4);
+          continue;
+        }
+      }
+      continue; // mines never move or collide while planted
+    }
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     if (b.x < -60 || b.y < -60 || b.x > g.worldW + 60 || b.y > g.worldH + 60) {
@@ -489,6 +538,27 @@ export function updateEnemies(g: Game, dt: number): void {
       e.vx = 0;
       e.vy = 0;
       // frozen/stunned: skip movement but keep separation
+      applyKnock(g, e, dt);
+      continue;
+    }
+
+    // phantom intangibility: no damage, no contact, slow drift
+    const wasGhost = e.ghostT > 0;
+    e.ghostT = Math.max(0, e.ghostT - dt);
+    if (wasGhost && e.ghostT <= 0 && e.def.behavior === 'phase') {
+      // re-materialize with a snap toward the player
+      const tx = p.x - e.x;
+      const ty = p.y - e.y;
+      const td = Math.hypot(tx, ty) || 1;
+      const hop = Math.min(260, Math.max(120, td - 140));
+      e.x = Math.max(24, Math.min(g.worldW - 24, e.x + (tx / td) * hop));
+      e.y = Math.max(24, Math.min(g.worldH - 24, e.y + (ty / td) * hop));
+      g.spawnParticleBurst(e.x, e.y, e.def.color, 14, 200, 3);
+      g.audio.sfx('freeze', 0.3);
+    }
+    if (e.ghostT > 0) {
+      e.vx *= Math.pow(0.02, dt);
+      e.vy *= Math.pow(0.02, dt);
       applyKnock(g, e, dt);
       continue;
     }
@@ -556,6 +626,110 @@ export function updateEnemies(g: Game, dt: number): void {
         const ty = nx * tang + ny * clamp(rad, -spd, spd);
         e.vx += (tx - e.vx) * Math.min(1, 5 * dt);
         e.vy += (ty - e.vy) * Math.min(1, 5 * dt);
+        break;
+      }
+      case 'volatile': {
+        // bomber: chase, arm fuse up close, detonate (explosion handled on death)
+        e.vx += (nx * spd - e.vx) * Math.min(1, 7 * dt);
+        e.vy += (ny * spd - e.vy) * Math.min(1, 7 * dt);
+        if (e.fuseT < 0 && d < 150) {
+          e.fuseT = 1.0;
+          g.audio.sfx('charge', 0.4);
+        }
+        if (e.fuseT >= 0) {
+          e.fuseT -= dt;
+          e.vx *= 1.35;
+          e.vy *= 1.35;
+          if (e.fuseT <= 0) {
+            g.damageEnemy(e, 1e9, false, 'fuse');
+            continue;
+          }
+        }
+        break;
+      }
+      case 'sniper': {
+        // lancer: holds far range while its heavy bolt charges
+        const keep = e.def.shoot?.keep ?? 520;
+        const strafe = ((e.eid % 2) * 2 - 1) * 0.5;
+        let tx2: number;
+        let ty2: number;
+        if (d < keep - 60) {
+          tx2 = -nx * spd;
+          ty2 = -ny * spd;
+        } else if (d > keep + 120) {
+          tx2 = nx * spd * 0.8;
+          ty2 = ny * spd * 0.8;
+        } else {
+          tx2 = -ny * spd * strafe;
+          ty2 = nx * spd * strafe;
+        }
+        e.vx += (tx2 - e.vx) * Math.min(1, 4 * dt);
+        e.vy += (ty2 - e.vy) * Math.min(1, 4 * dt);
+        break;
+      }
+      case 'mender': {
+        // healer: hangs back, pulses regeneration into nearby allies
+        const keep2 = 330;
+        let tx3: number;
+        let ty3: number;
+        if (d < keep2 - 60) {
+          tx3 = -nx * spd;
+          ty3 = -ny * spd;
+        } else if (d > keep2 + 100) {
+          tx3 = nx * spd;
+          ty3 = ny * spd;
+        } else {
+          tx3 = -ny * spd * 0.6;
+          ty3 = nx * spd * 0.6;
+        }
+        e.vx += (tx3 - e.vx) * Math.min(1, 4 * dt);
+        e.vy += (ty3 - e.vy) * Math.min(1, 4 * dt);
+        e.healT -= dt;
+        if (e.healT <= 0) {
+          e.healT = 1.2;
+          let healed = 0;
+          for (const ally of g.enemies) {
+            if (ally === e || ally.dead || ally.hp <= 0 || ally.spawnT > 0) continue;
+            if (ally.def.behavior === 'boss') continue;
+            const ad = Math.hypot(ally.x - e.x, ally.y - e.y);
+            if (ad < 270 && ally.hp < ally.maxHp) {
+              ally.hp = Math.min(ally.maxHp, ally.hp + ally.maxHp * 0.05);
+              healed++;
+              if (healed <= 3 && Math.random() < 0.5) {
+                g.spawnParticle(ally.x, ally.y - ally.radius, 0, -40, 0.5, 2.5, '#6dffb0');
+              }
+            }
+          }
+          if (healed > 0) {
+            g.shockwaves.push({
+              x: e.x,
+              y: e.y,
+              r: 8,
+              maxR: 270,
+              speed: 520,
+              life: 0.32,
+              maxLife: 0.32,
+              color: '#6dffb0',
+              width: 2.5,
+              dmg: 0,
+              knock: 0,
+              hitIds: new Set<number>(),
+            });
+            g.audio.sfx('pickup', 0.5);
+          }
+        }
+        break;
+      }
+      case 'phase': {
+        // phantom: stalks, then slips out of reality
+        e.phaseT += dt;
+        if (e.phaseT >= 3.2 && e.ghostT <= 0) {
+          e.phaseT = 0;
+          e.ghostT = 0.7;
+          g.spawnParticleBurst(e.x, e.y, e.def.color, 10, 140, 2.5);
+        }
+        e.vx += (nx * spd - e.vx) * Math.min(1, 6 * dt);
+        e.vy += (ny * spd - e.vy) * Math.min(1, 6 * dt);
         break;
       }
       default:
@@ -640,7 +814,7 @@ export function updateShocks(g: Game, dt: number): void {
     }
     if (s.dmg > 0) {
       for (const e of g.enemies) {
-        if (e.hp <= 0 || e.spawnT > 0 || s.hitIds.has(e.eid)) continue;
+        if (e.hp <= 0 || e.spawnT > 0 || e.ghostT > 0 || s.hitIds.has(e.eid)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
         if (d < s.r + e.radius && d > s.r - 40 - e.radius) {
           s.hitIds.add(e.eid);
@@ -714,6 +888,7 @@ export function updateGems(g: Game, dt: number): void {
       } else if (gem.kind === 'heal') {
         const heal = Math.min(gem.value, p.maxHp - p.hp);
         p.hp += heal;
+        g.runHeals++;
         g.audio.sfx('pickupHeal');
         g.addText(p.x, p.y - 30, `+${Math.round(heal)} HULL`, '#ff6d8c', 14, true);
         g.spawnParticleBurst(gem.x, gem.y, '#ff6d8c', 10, 130, 3);

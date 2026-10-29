@@ -4,11 +4,84 @@ export type GameState =
   | 'title'
   | 'perks'
   | 'help'
+  | 'pass'
+  | 'market'
   | 'playing'
   | 'levelup'
   | 'paused'
   | 'gameover'
   | 'victory';
+
+export type Currency = 'cores' | 'prisms';
+
+export interface PassReward {
+  kind: 'cores' | 'prisms' | 'skin' | 'booster' | 'title';
+  amount?: number; // cores/prisms
+  id?: string; // skin id / booster id
+  label: string;
+}
+
+export interface PassTier {
+  tier: number; // 1..30
+  need: number; // bp xp required to reach this tier (cumulative per-tier delta)
+  free: PassReward;
+  prime: PassReward;
+}
+
+export interface ContractDef {
+  id: string;
+  desc: string;
+  target: number;
+  metric:
+    | 'kills'
+    | 'wave'
+    | 'elites'
+    | 'bosses'
+    | 'dashKills'
+    | 'overdrive'
+    | 'coresEarned'
+    | 'score'
+    | 'wins'
+    | 'heals';
+  perRun: boolean; // true = must be achieved within a single run
+  bpXp: number;
+  cores?: number;
+  prisms?: number;
+}
+
+export interface BoosterDef {
+  id: string;
+  name: string;
+  desc: string;
+  currency: Currency;
+  price: number;
+  color: string;
+}
+
+export interface SkinDef {
+  id: string;
+  name: string;
+  desc: string;
+  rarity: 'starter' | 'common' | 'rare' | 'epic' | 'prime';
+  currency: Currency | 'pass';
+  price: number; // 0 = default / pass-granted
+  color: string;
+  trail: string;
+  glow: string;
+  draw: (ctx: CanvasRenderingContext2D, t: number) => void; // draws at origin facing up
+}
+
+export interface MarketEntryInfo {
+  id: string;
+  name: string;
+  desc: string;
+  price: number;
+  currency: Currency;
+  color: string;
+  owned: boolean;
+  equipped: boolean;
+  rarityLabel: string;
+}
 
 export interface Vec {
   x: number;
@@ -41,6 +114,7 @@ export interface WeaponInstance {
 }
 
 export interface Player {
+  shield: number; // 1-hit guard from Shield Cache booster
   x: number;
   y: number;
   vx: number;
@@ -80,6 +154,10 @@ export type EnemyBehavior =
   | 'orbit'
   | 'splitter'
   | 'pod'
+  | 'volatile'
+  | 'sniper'
+  | 'mender'
+  | 'phase'
   | 'boss';
 
 export type EliteMod = 'burst' | 'swift' | 'shield';
@@ -112,7 +190,20 @@ export interface EnemyDef {
   knockResist?: number;
   weight: number; // spawn weight
   unlockWave: number;
-  shape: 'mote' | 'drifter' | 'sprinter' | 'spitter' | 'splitter' | 'bulwark' | 'orbiter' | 'shard' | 'boss';
+  shape:
+    | 'mote'
+    | 'drifter'
+    | 'sprinter'
+    | 'spitter'
+    | 'splitter'
+    | 'bulwark'
+    | 'orbiter'
+    | 'shard'
+    | 'volatile'
+    | 'lancer'
+    | 'mender'
+    | 'phantom'
+    | 'boss';
 }
 
 export interface Enemy {
@@ -147,6 +238,10 @@ export interface Enemy {
   rage: number; // speed multiplier when wave over
   shieldHits: number;
   hitCd: Map<number, number>; // bullet source cooldowns
+  fuseT: number; // volatile: detonation countdown (-1 = idle)
+  ghostT: number; // phantom: intangible time remaining
+  phaseT: number; // phantom / sniper: cycle accumulator
+  healT: number; // mender: pulse timer
   dead?: boolean;
 }
 
@@ -216,6 +311,9 @@ export interface EBullet {
   r: number;
   dmg: number;
   life: number;
+  mine?: boolean; // leviathan proximity mine
+  armT?: number; // mine arming delay
+  telegraph?: number; // lancer heavy shot visual
   dead?: boolean;
 }
 
@@ -356,8 +454,21 @@ export interface MetaPerk {
   color: string;
 }
 
+export interface LifeStats {
+  kills: number;
+  elites: number;
+  bosses: number;
+  dashKills: number;
+  overdrive: number;
+  coresEarned: number;
+  heals: number;
+}
+
 export interface MetaSave {
+  saveVersion: 2;
+  seasonId: number;
   cores: number;
+  prisms: number;
   perks: Record<string, number>;
   bestScore: number;
   bestWave: number;
@@ -365,6 +476,27 @@ export interface MetaSave {
   wins: number;
   endlessUnlocked: boolean;
   muted: boolean;
+  // battle pass
+  passLevel: number; // 1..30
+  passXp: number; // xp into current tier
+  prime: boolean;
+  primeDemo: boolean; // unlocked via simulated purchase
+  // cosmetics
+  skinsOwned: string[];
+  skinEquipped: string;
+  equippedTitle: string;
+  titlesOwned: string[];
+  // market
+  boosters: Record<string, number>;
+  // contracts
+  contractSlots: string[]; // 3 active ids
+  contractProgress: Record<string, number>;
+  contractsDone: string[];
+  contractsCleared: number;
+  // lifetime stats for contract metrics
+  life: LifeStats;
+  // BP lifetime
+  bpXpTotal: number;
 }
 
 export interface ButtonRect {

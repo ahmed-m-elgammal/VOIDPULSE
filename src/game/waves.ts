@@ -29,7 +29,7 @@ export function startWave(g: Game, wave: number): void {
       idx = BOSS_WAVES[wave];
     } else {
       const k = Math.floor((wave - 15) / 5); // 20 -> 1, 25 -> 2 ...
-      idx = k % 3;
+      idx = k % 4; // four deep-dwellers rotate through the endless dark
       hpMult = Math.pow(1.45, k);
     }
     g.pendingBoss = { idx, hpMult };

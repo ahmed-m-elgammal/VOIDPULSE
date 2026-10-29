@@ -50,6 +50,18 @@ import {
 } from './combat';
 import { updateBoss } from './bosses';
 import { startWave, updateWaves } from './waves';
+import {
+  BOOSTERS,
+  EXCHANGE_CORES,
+  EXCHANGE_PRISMS,
+  PRIME_PRICE,
+  applyBpXp,
+  computeRunBpXp,
+  settleContracts,
+  type ContractComplete,
+  type RunStats,
+} from './economy';
+import { skinOf } from './skins';
 
 interface DelayedCall {
   t: number;
@@ -134,6 +146,19 @@ export class Game {
   rerolls = 0;
   cardHover = -1;
 
+  // SEASON ONE — run counters + economy ceremony
+  runDashKills = 0;
+  runElites = 0;
+  runHeals = 0;
+  runOverdrive = 0;
+  activeBoosters: Record<string, boolean> = {};
+  bpXpGained = 0;
+  bpLevelsGained = 0;
+  bpRewards: { tier: number; track: 'free' | 'prime'; label: string }[] = [];
+  contractResults: ContractComplete[] = [];
+  marketTab = 0;
+  passSelectedTier = 1;
+
   // ui
   menuIndex = 0;
   perkIndex = 0;
@@ -175,8 +200,10 @@ export class Game {
       },
       passives
     );
+    if (this.activeBoosters['xpAmp']) stats.xpMult *= 1.3;
     const maxHp = PLAYER_BASE.hp + perkTiers('guardCore') * 15;
     this.player = {
+      shield: this.activeBoosters['shieldCache'] ? 1 : 0,
       x: this.worldW / 2,
       y: this.worldH / 2,
       vx: 0,
@@ -213,6 +240,18 @@ export class Game {
   // ---------------- run lifecycle ----------------
 
   startRun(): void {
+    // consume boosters (one of each owned type fires this run)
+    this.activeBoosters = {};
+    let consumed = 0;
+    for (const b of BOOSTERS) {
+      const n = this.meta.data.boosters[b.id] ?? 0;
+      if (n > 0) {
+        this.meta.data.boosters[b.id] = n - 1;
+        this.activeBoosters[b.id] = true;
+        consumed++;
+      }
+    }
+    if (consumed > 0) this.meta.save();
     this.resetPlayer();
     this.enemies.length = 0;
     this.bullets.length = 0;
@@ -240,6 +279,14 @@ export class Game {
     this.endlessMode = false;
     this.pendingLevels = 0;
     this.cards = [];
+    this.runDashKills = 0;
+    this.runElites = 0;
+    this.runHeals = 0;
+    this.runOverdrive = 0;
+    this.bpXpGained = 0;
+    this.bpLevelsGained = 0;
+    this.bpRewards = [];
+    this.contractResults = [];
     this.camera.x = this.player.x;
     this.camera.y = this.player.y;
     this.hintsShown.clear();
@@ -288,15 +335,45 @@ export class Game {
 
   private finalizeRun(won: boolean): void {
     const m = this.meta.data;
-    this.coresEarned =
-      Math.floor(this.score / 1000) + this.wave * 3 + this.bossKills * 30;
+    m.runs++;
+    // ---- cores ----
+    const baseCores = Math.floor(this.score / 1000) + this.wave * 3 + this.bossKills * 30;
+    this.coresEarned = Math.round(baseCores * (this.activeBoosters['coreAmp'] ? 1.35 : 1));
+    const run: RunStats = {
+      wave: this.wave,
+      kills: this.kills,
+      elites: this.runElites,
+      bosses: this.bossKills,
+      dashKills: this.runDashKills,
+      overdrive: this.runOverdrive,
+      score: Math.floor(this.score),
+      heals: this.runHeals,
+      coresEarned: this.coresEarned,
+      won,
+    };
     m.cores += this.coresEarned;
+    // ---- lifetime stats (feeds contracts) ----
+    m.life.kills += this.kills;
+    m.life.elites += this.runElites;
+    m.life.bosses += this.bossKills;
+    m.life.dashKills += this.runDashKills;
+    m.life.overdrive += this.runOverdrive;
+    m.life.coresEarned += this.coresEarned;
+    m.life.heals += this.runHeals;
     m.bestScore = Math.max(m.bestScore, Math.floor(this.score));
     m.bestWave = Math.max(m.bestWave, this.wave);
     if (won) {
       m.wins++;
       m.endlessUnlocked = true;
     }
+    // ---- contracts (may add bp xp) ----
+    this.contractResults = settleContracts(m, run);
+    // ---- battle pass ----
+    const rawBp = computeRunBpXp(run) * (this.activeBoosters['bpAmp'] ? 1.4 : 1);
+    this.bpXpGained = Math.round(rawBp) + this.contractResults.reduce((a, c) => a + c.bpXp, 0);
+    const grant = applyBpXp(m, this.bpXpGained);
+    this.bpLevelsGained = grant.levelsGained;
+    this.bpRewards = grant.rewards;
     this.meta.save();
   }
 
@@ -468,6 +545,10 @@ export class Game {
       rage: 1,
       shieldHits: mod === 'shield' ? 3 : 0,
       hitCd: new Map<number, number>(),
+      fuseT: -1,
+      ghostT: 0,
+      phaseT: 0,
+      healT: 1.2,
     };
     this.enemies.push(e);
     if (elite) {
@@ -503,6 +584,49 @@ export class Game {
     if (e.dead) return;
     e.dead = true;
     this.kills++;
+    if (source === 'dash' && e.def.minor && !e.elite) this.runDashKills++;
+    if (e.elite) this.runElites++;
+    // volatile detonation — always explodes, even when shot down
+    if (e.def.behavior === 'volatile') {
+      const R = 96;
+      const dx = this.player.x - e.x;
+      const dy = this.player.y - e.y;
+      const d = Math.hypot(dx, dy);
+      if (d < R + this.player.radius) {
+        this.damagePlayer(16 * this.dmgScale, e.x, e.y);
+      }
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + Math.random() * 0.4;
+        if (this.ebullets.length < 320) {
+          this.ebullets.push({
+            x: e.x,
+            y: e.y,
+            vx: Math.cos(a) * 235,
+            vy: Math.sin(a) * 235,
+            r: 5,
+            dmg: 9 * this.dmgScale,
+            life: 2.5,
+          });
+        }
+      }
+      this.shockwaves.push({
+        x: e.x,
+        y: e.y,
+        r: 8,
+        maxR: 150,
+        speed: 700,
+        life: 0.24,
+        maxLife: 0.24,
+        color: '#ff8a3d',
+        width: 5,
+        dmg: 0,
+        knock: 220,
+        hitIds: new Set<number>(),
+      });
+      this.audio.sfx('explode', 0.25);
+      this.shake(7);
+      this.spawnParticleBurst(e.x, e.y, '#ff8a3d', 26, 320, 4);
+    }
     // score with heat multiplier
     const p = this.player;
     const mult = (1 + p.heat / 100) * (p.overdrive > 0 ? 2 : 1);
@@ -665,6 +789,7 @@ export class Game {
       },
       p.passives
     );
+    if (this.activeBoosters['xpAmp']) p.stats.xpMult *= 1.3;
     const newMax = PLAYER_BASE.hp + this.meta.perkTiers('guardCore') * 15 + (p.passives['vitality'] ?? 0) * 20;
     if (newMax !== oldMax) {
       const diff = newMax - oldMax;
@@ -689,6 +814,83 @@ export class Game {
     this.meta.save();
     this.audio.sfx('buy');
     if (this.state === 'playing') this.recomputeStats();
+  }
+
+  // ---------------- SEASON ONE economy actions ----------------
+
+  buySkin(id: string): void {
+    const skin = skinOf(id);
+    if (skin.id === 'pulse' || skin.currency === 'pass') return;
+    if (this.meta.data.skinsOwned.includes(id)) return;
+    const bal = skin.currency === 'cores' ? this.meta.data.cores : this.meta.data.prisms;
+    if (bal < skin.price) {
+      this.audio.sfx('error');
+      return;
+    }
+    if (skin.currency === 'cores') this.meta.data.cores -= skin.price;
+    else this.meta.data.prisms -= skin.price;
+    this.meta.data.skinsOwned.push(id);
+    this.meta.data.skinEquipped = id;
+    this.meta.save();
+    this.audio.sfx('buy');
+  }
+
+  equipSkin(id: string): void {
+    if (!this.meta.data.skinsOwned.includes(id)) return;
+    this.meta.data.skinEquipped = id;
+    this.meta.save();
+    this.audio.sfx('select');
+  }
+
+  buyBooster(id: string): void {
+    const b = BOOSTERS.find((x) => x.id === id);
+    if (!b) return;
+    const bal = b.currency === 'cores' ? this.meta.data.cores : this.meta.data.prisms;
+    if (bal < b.price) {
+      this.audio.sfx('error');
+      return;
+    }
+    if (b.currency === 'cores') this.meta.data.cores -= b.price;
+    else this.meta.data.prisms -= b.price;
+    this.meta.data.boosters[id] = (this.meta.data.boosters[id] ?? 0) + 1;
+    this.meta.save();
+    this.audio.sfx('buy');
+  }
+
+  unlockPrime(): void {
+    const m = this.meta.data;
+    if (m.prime) return;
+    if (m.prisms < PRIME_PRICE) {
+      this.audio.sfx('error');
+      return;
+    }
+    m.prisms -= PRIME_PRICE;
+    m.prime = true;
+    this.meta.save();
+    this.audio.sfx('victory');
+    this.flashScreen('#c9b8ff', 0.4);
+  }
+
+  unlockPrimeDemo(): void {
+    const m = this.meta.data;
+    if (m.prime) return;
+    m.prime = true;
+    m.primeDemo = true;
+    this.meta.save();
+    this.audio.sfx('victory');
+    this.flashScreen('#c9b8ff', 0.4);
+  }
+
+  exchangePrisms(): void {
+    const m = this.meta.data;
+    if (m.cores < EXCHANGE_CORES) {
+      this.audio.sfx('error');
+      return;
+    }
+    m.cores -= EXCHANGE_CORES;
+    m.prisms += EXCHANGE_PRISMS;
+    this.meta.save();
+    this.audio.sfx('trade');
   }
 
   // ---------------- fx helpers ----------------
@@ -774,9 +976,41 @@ export class Game {
       this.rerollCards();
       return;
     }
+    if (id.startsWith('skin_buy_')) {
+      this.buySkin(id.slice(9));
+      return;
+    }
+    if (id.startsWith('skin_equip_')) {
+      this.equipSkin(id.slice(11));
+      return;
+    }
+    if (id.startsWith('booster_buy_')) {
+      this.buyBooster(id.slice(12));
+      return;
+    }
+    if (id.startsWith('market_tab_')) {
+      this.marketTab = parseInt(id.slice(11), 10) || 0;
+      this.audio.sfx('uiMove');
+      return;
+    }
+    if (id.startsWith('tier_select_')) {
+      const n = parseInt(id.slice(12), 10);
+      if (!Number.isNaN(n) && n >= 1 && n <= 30) {
+        this.passSelectedTier = n;
+        this.audio.sfx('uiMove');
+      }
+      return;
+    }
     switch (id) {
       case 'title_start':
         this.startRun();
+        break;
+      case 'title_pass':
+        this.state = 'pass';
+        this.passSelectedTier = Math.max(1, this.meta.data.passLevel);
+        break;
+      case 'title_market':
+        this.state = 'market';
         break;
       case 'title_perks':
         this.state = 'perks';
@@ -784,6 +1018,23 @@ export class Game {
         break;
       case 'title_help':
         this.state = 'help';
+        break;
+      case 'pass_back':
+        this.state = 'title';
+        this.menuIndex = 0;
+        break;
+      case 'pass_unlock_prime':
+        this.unlockPrime();
+        break;
+      case 'pass_demo':
+        this.unlockPrimeDemo();
+        break;
+      case 'market_back':
+        this.state = 'title';
+        this.menuIndex = 0;
+        break;
+      case 'exchange_btn':
+        this.exchangePrisms();
         break;
       case 'perk_buy':
         this.buyPerk(META_PERKS[this.perkIndex]?.id ?? '');
@@ -842,16 +1093,23 @@ export class Game {
     this.audio.init();
     switch (this.state) {
       case 'title': {
-        if (code === 'Enter' || code === 'NumpadEnter') this.startRun();
-        else if (code === 'KeyE') {
+        if (code === 'Enter' || code === 'NumpadEnter') {
+          const actions = ['title_start', 'title_pass', 'title_market', 'title_perks', 'title_help'];
+          this.onButton(actions[this.menuIndex] ?? 'title_start');
+        } else if (code === 'KeyB') {
+          this.state = 'pass';
+          this.passSelectedTier = Math.max(1, this.meta.data.passLevel);
+        } else if (code === 'KeyN') {
+          this.state = 'market';
+        } else if (code === 'KeyE') {
           this.state = 'perks';
           this.perkIndex = 0;
         } else if (code === 'KeyH') this.state = 'help';
         else if (code === 'ArrowUp' || code === 'KeyW') {
-          this.menuIndex = (this.menuIndex + 2) % 3;
+          this.menuIndex = (this.menuIndex + 4) % 5;
           this.audio.sfx('uiMove');
         } else if (code === 'ArrowDown' || code === 'KeyS') {
-          this.menuIndex = (this.menuIndex + 1) % 3;
+          this.menuIndex = (this.menuIndex + 1) % 5;
           this.audio.sfx('uiMove');
         } else if (code === 'KeyM') this.toggleMute();
         break;
@@ -897,6 +1155,9 @@ export class Game {
         else if (code === 'KeyT') {
           this.state = 'title';
           this.menuIndex = 0;
+        } else if (code === 'KeyB') {
+          this.state = 'pass';
+          this.passSelectedTier = Math.max(1, this.meta.data.passLevel);
         } else if (code === 'KeyM') this.toggleMute();
         break;
       }
@@ -906,7 +1167,30 @@ export class Game {
         else if (code === 'KeyT') {
           this.state = 'title';
           this.menuIndex = 0;
+        } else if (code === 'KeyB') {
+          this.state = 'pass';
+          this.passSelectedTier = Math.max(1, this.meta.data.passLevel);
         } else if (code === 'KeyM') this.toggleMute();
+        break;
+      }
+      case 'pass': {
+        if (code === 'Escape' || code === 'KeyB') {
+          this.state = 'title';
+          this.menuIndex = 0;
+        }
+        break;
+      }
+      case 'market': {
+        if (code === 'Escape' || code === 'KeyN') {
+          this.state = 'title';
+          this.menuIndex = 0;
+        } else if (code === 'ArrowLeft' || code === 'KeyA') {
+          this.marketTab = (this.marketTab + 2) % 3;
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowRight' || code === 'KeyD') {
+          this.marketTab = (this.marketTab + 1) % 3;
+          this.audio.sfx('uiMove');
+        }
         break;
       }
     }
