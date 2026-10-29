@@ -11,7 +11,7 @@
 import { Game } from '../src/game/game';
 import { AudioEngine } from '../src/game/audio';
 import { WEAPONS, EVO_MAP } from '../src/game/content';
-import type { CardOption } from '../src/game/types';
+import type { CardOption, GameState } from '../src/game/types';
 
 const STEP = 1 / 60;
 
@@ -194,7 +194,7 @@ function testEvolutionAndMaxSystems(): string[] {
   // run 20 seconds of chaos
   game.state = 'playing';
   for (let i = 0; i < 20 * 60; i++) {
-    if (game.state === 'levelup') game.chooseCard(0);
+    if ((game.state as GameState) === 'levelup') game.chooseCard(0);
     game.update(STEP);
   }
   if (!Number.isFinite(game.score)) errors.push('score NaN in max-systems test');
