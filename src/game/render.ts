@@ -1,13 +1,33 @@
 // ===== VOIDPULSE :: canvas renderer (world + HUD) =====
 
 import type { Game } from './game';
-import type { Enemy, Player } from './types';
+import type { ColorblindMode, Enemy, Player } from './types';
 import { TAU, clamp, fmtScore, fmtTime } from './utils';
 import { WEAPONS, WORLD_H, WORLD_W } from './content';
 import { drawMenus, drawLevelUpCards } from './renderUI';
 import { skinOf } from './skins';
 
 const MONO = `ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace`;
+
+// colorblind-safe remaps for gameplay-critical colors (identity elsewhere)
+const CB_MAP: Record<ColorblindMode, Record<string, string>> = {
+  off: {},
+  protan: {
+    '#6dff8c': '#5cd6ff', '#a8ffb8': '#a8e6ff',
+    '#ff6d8c': '#ff9d5c', '#ffd3de': '#ffe6c9',
+    '#ff4d7e': '#ffd166', '#ff8fb0': '#ffd166', '#ffd9e6': '#ffe9a8',
+    '#ff5c5c': '#ffb300', '#ff9a3d': '#ff5cf0',
+  },
+  deutan: {
+    '#6dff8c': '#5cd6ff', '#a8ffb8': '#a8e6ff',
+    '#ff6d8c': '#ffb35c', '#ffd3de': '#ffe6c9',
+    '#ff4d7e': '#ffd166', '#ff8fb0': '#ffd166', '#ffd9e6': '#ffe9a8',
+    '#ff5c5c': '#ff9500', '#ff9a3d': '#ff5cf0',
+  },
+  tritan: {
+    '#ff9a3d': '#ff9adf', '#ffb14d': '#ffb1df',
+  },
+};
 
 function font(size: number, weight = 400): string {
   return `${weight} ${size}px ${MONO}`;
@@ -29,6 +49,7 @@ export class Renderer {
   viewH = 720;
   private g!: Game;
   private glowCache = new Map<string, HTMLCanvasElement>();
+  private spriteCache = new Map<string, HTMLCanvasElement>();
   private stars: Star[] = [];
   private vignette: HTMLCanvasElement | null = null;
   t = 0;
@@ -88,6 +109,7 @@ export class Renderer {
   }
 
   private glow(color: string): HTMLCanvasElement {
+    color = this.cbColor(color);
     let c = this.glowCache.get(color);
     if (c) return c;
     c = document.createElement('canvas');
@@ -112,6 +134,183 @@ export class Renderer {
     ctx.globalAlpha = alpha;
     ctx.drawImage(img, x - radius, y - radius, radius * 2, radius * 2);
     ctx.globalAlpha = 1;
+  }
+
+  /** colorblind remap — pass-through when off or color not in the map */
+  cbColor(color: string): string {
+    if (!this.g || this.g.settings.colorblind === 'off') return color;
+    return CB_MAP[this.g.settings.colorblind][color] ?? color;
+  }
+
+  // ================= enemy sprite pre-baking =================
+  // Procedural bodies are baked once per (shape, color, radius) into offscreen
+  // canvases at 2x resolution; per-frame drawing becomes a single transformed
+  // drawImage. Dynamic state (rotation, telegraphs, blink) stays live.
+
+  private static readonly SPR_PAD = 1.75; // max extent multiplier (lancer 1.6r)
+
+  private enemySprite(shape: string, col: string, r: number, blink = false): HTMLCanvasElement {
+    const key = `${shape}|${col}|${Math.ceil(r)}|${blink ? 1 : 0}`;
+    const hit = this.spriteCache.get(key);
+    if (hit) return hit;
+    const half = r * Renderer.SPR_PAD;
+    const S = Math.max(8, Math.ceil(half * 2 * 2)); // 2x resolution
+    const c = document.createElement('canvas');
+    c.width = S;
+    c.height = S;
+    const g2 = c.getContext('2d');
+    if (g2) {
+      g2.translate(S / 2, S / 2);
+      g2.scale(2, 2); // bake at 2x, draw at half size = crisp
+      this.bakeEnemyBody(g2, shape, col, r, blink);
+    }
+    this.spriteCache.set(key, c);
+    return c;
+  }
+
+  private bakeEnemyBody(ctx: CanvasRenderingContext2D, shape: string, col: string, r: number, blink: boolean): void {
+    ctx.strokeStyle = col;
+    ctx.fillStyle = 'rgba(20,8,16,0.82)';
+    ctx.lineWidth = 2;
+    switch (shape) {
+      case 'mote':
+      case 'shard': {
+        ctx.beginPath();
+        ctx.moveTo(0, -r);
+        ctx.lineTo(r, 0);
+        ctx.lineTo(0, r);
+        ctx.lineTo(-r, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'drifter': {
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.5, 0, TAU);
+        ctx.stroke();
+        break;
+      }
+      case 'sprinter': {
+        ctx.beginPath();
+        ctx.moveTo(0, -r * 1.3);
+        ctx.lineTo(r * 0.85, r);
+        ctx.lineTo(0, r * 0.4);
+        ctx.lineTo(-r * 0.85, r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'spitter': {
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const a = -Math.PI / 2 + (i / 5) * TAU;
+          const px = Math.cos(a) * r;
+          const py = Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'splitter': {
+        ctx.fillRect(-r * 0.85, -r * 0.85, r * 1.7, r * 1.7);
+        ctx.strokeRect(-r * 0.85, -r * 0.85, r * 1.7, r * 1.7);
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.85, 0);
+        ctx.lineTo(r * 0.85, 0);
+        ctx.stroke();
+        break;
+      }
+      case 'bulwark': {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * TAU;
+          const px = Math.cos(a) * r;
+          const py = Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'orbiter': {
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, TAU);
+        ctx.stroke();
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.4, 0, TAU);
+        ctx.fill();
+        break;
+      }
+      case 'volatile': {
+        ctx.strokeStyle = blink ? '#ffffff' : col;
+        ctx.fillStyle = blink ? 'rgba(255,120,40,0.9)' : 'rgba(20,8,16,0.82)';
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * TAU;
+          const rr = i % 2 === 0 ? r * 1.25 : r * 0.62;
+          const px = Math.cos(a) * rr;
+          const py = Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'lancer': {
+        ctx.fillStyle = 'rgba(20,8,16,0.82)';
+        ctx.beginPath();
+        ctx.moveTo(r * 1.6, 0);
+        ctx.lineTo(-r * 0.7, r * 0.62);
+        ctx.lineTo(-r * 1.15, 0);
+        ctx.lineTo(-r * 0.7, -r * 0.62);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      case 'mender': {
+        if (blink) {
+          // rotating cross
+          ctx.fillStyle = col;
+          ctx.fillRect(-r * 0.16, -r * 0.7, r * 0.32, r * 1.4);
+          ctx.fillRect(-r * 0.7, -r * 0.16, r * 1.4, r * 0.32);
+        } else {
+          // static ring
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, TAU);
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'phantom': {
+        ctx.fillStyle = 'rgba(20,8,16,0.82)';
+        ctx.beginPath();
+        ctx.moveTo(-r, -r);
+        ctx.lineTo(r, -r);
+        ctx.lineTo(-r, r);
+        ctx.lineTo(r, r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+      default:
+        break;
+    }
   }
 
   // ================= master draw =================
@@ -142,6 +341,7 @@ export class Renderer {
       case 'help':
       case 'pass':
       case 'market':
+      case 'settings':
         drawMenus(this, g);
         break;
       case 'playing':
@@ -186,6 +386,13 @@ export class Renderer {
     const camY = g.camera.y + sy;
 
     ctx.save();
+    // boss-kill zoom punch-in
+    if (g.zoomKick > 0.01) {
+      const zoom = 1 + g.zoomKick * 0.08;
+      ctx.translate(this.viewW / 2, this.viewH / 2);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-this.viewW / 2, -this.viewH / 2);
+    }
     ctx.translate(this.viewW / 2 - camX, this.viewH / 2 - camY);
 
     const vw = this.viewW;
@@ -210,8 +417,8 @@ export class Renderer {
     for (const gem of g.gems) {
       const pulse = 1 + Math.sin(this.t * 6 + gem.t * 3) * 0.15;
       if (gem.kind === 'xp') {
-        this.drawGlow(gem.x, gem.y, 12 * pulse, '#6dff8c', 0.5);
-        ctx.fillStyle = '#a8ffb8';
+        this.drawGlow(gem.x, gem.y, 12 * pulse, this.cbColor('#6dff8c'), 0.5);
+        ctx.fillStyle = this.cbColor('#a8ffb8');
         ctx.save();
         ctx.translate(gem.x, gem.y);
         ctx.rotate(Math.PI / 4 + gem.t * 1.2);
@@ -219,8 +426,8 @@ export class Renderer {
         ctx.fillRect(-s / 2, -s / 2, s, s);
         ctx.restore();
       } else {
-        this.drawGlow(gem.x, gem.y, 18 * pulse, '#ff6d8c', 0.7);
-        ctx.fillStyle = '#ffd3de';
+        this.drawGlow(gem.x, gem.y, 18 * pulse, this.cbColor('#ff6d8c'), 0.7);
+        ctx.fillStyle = this.cbColor('#ffd3de');
         ctx.save();
         ctx.translate(gem.x, gem.y);
         ctx.fillRect(-1.6, -6, 3.2, 12);
@@ -232,7 +439,7 @@ export class Renderer {
     // shockwaves
     for (const s of g.shockwaves) {
       const lifeA = clamp(s.life / s.maxLife, 0, 1);
-      ctx.strokeStyle = s.color;
+      ctx.strokeStyle = this.cbColor(s.color);
       ctx.globalAlpha = lifeA * 0.9;
       ctx.lineWidth = s.width * lifeA + 1;
       ctx.beginPath();
@@ -353,7 +560,25 @@ export class Renderer {
     // particles
     for (const p of g.particles) {
       const a = clamp(p.life / p.maxLife, 0, 1);
-      this.drawGlow(p.x, p.y, p.size * 3.2 * a + 2, p.color, a * 0.9);
+      if (p.kind === 'gib') {
+        // spinning hull fragment — no glow, hard fade
+        ctx.globalAlpha = a;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot ?? 0);
+        ctx.fillStyle = p.color;
+        const s = p.size;
+        ctx.beginPath();
+        ctx.moveTo(-s, -s * 0.6);
+        ctx.lineTo(s, -s * 0.3);
+        ctx.lineTo(s * 0.5, s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      } else {
+        this.drawGlow(p.x, p.y, p.size * 3.2 * a + 2, p.color, a * 0.9);
+      }
     }
     ctx.globalCompositeOperation = 'source-over';
 
@@ -387,7 +612,7 @@ export class Renderer {
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.strokeText(t.text, t.x, t.y);
-      ctx.fillStyle = t.color;
+      ctx.fillStyle = this.cbColor(t.color);
       ctx.fillText(t.text, t.x, t.y);
       ctx.globalAlpha = 1;
     }
@@ -611,172 +836,106 @@ export class Renderer {
       this.drawGlow(x, y, e.radius * 2.1, e.elite ? '#ff9a3d' : e.def.glow, e.elite ? 0.8 : 0.42);
     }
 
-    ctx.save();
-    ctx.translate(x, y);
     const r = e.radius;
-    ctx.strokeStyle = col;
-    ctx.fillStyle = 'rgba(20,8,16,0.82)';
-    ctx.lineWidth = 2;
+    const shape = e.def.shape;
 
-    const angle = Math.atan2(this.g.player.y - y, this.g.player.x - x);
+    if (shape === 'boss') {
+      const angle = Math.atan2(this.g.player.y - y, this.g.player.x - x);
+      ctx.save();
+      ctx.translate(x, y);
+      this.drawBossBody(e, angle);
+      ctx.restore();
+      this.drawEnemyOverlays(e);
+      return;
+    }
 
-    switch (e.def.shape) {
+    // ---- baked sprite body (single drawImage + transform) ----
+    const half = r * Renderer.SPR_PAD;
+    const aim = Math.atan2(this.g.player.y - y, this.g.player.x - x);
+
+    const blit = (spr: HTMLCanvasElement, rot: number, alpha = 1): void => {
+      ctx.save();
+      ctx.translate(x, y);
+      if (rot !== 0) ctx.rotate(rot);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(spr, -half, -half, half * 2, half * 2);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    };
+
+    switch (shape) {
       case 'mote':
-      case 'shard': {
-        ctx.rotate(e.t * 4);
-        ctx.beginPath();
-        ctx.moveTo(0, -r);
-        ctx.lineTo(r, 0);
-        ctx.lineTo(0, r);
-        ctx.lineTo(-r, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+      case 'shard':
+        blit(this.enemySprite(shape, col, r), e.t * 4);
         break;
-      }
-      case 'drifter': {
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, TAU);
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(0, 0, r * 0.5, 0, TAU);
-        ctx.stroke();
+      case 'drifter':
+        blit(this.enemySprite(shape, col, r), 0);
         break;
-      }
-      case 'sprinter': {
-        ctx.rotate(angle + Math.PI / 2);
-        ctx.beginPath();
-        ctx.moveTo(0, -r * 1.3);
-        ctx.lineTo(r * 0.85, r);
-        ctx.lineTo(0, r * 0.4);
-        ctx.lineTo(-r * 0.85, r);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+      case 'sprinter':
+        blit(this.enemySprite(shape, col, r), aim + Math.PI / 2);
         break;
-      }
-      case 'spitter': {
-        ctx.rotate(-e.t * 1.2);
-        ctx.beginPath();
-        for (let i = 0; i < 5; i++) {
-          const a = -Math.PI / 2 + (i / 5) * TAU;
-          const px = Math.cos(a) * r;
-          const py = Math.sin(a) * r;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+      case 'spitter':
+        blit(this.enemySprite(shape, col, r), -e.t * 1.2);
         break;
-      }
-      case 'splitter': {
-        ctx.rotate(Math.PI / 4 + Math.sin(e.t * 2) * 0.2);
-        ctx.fillRect(-r * 0.85, -r * 0.85, r * 1.7, r * 1.7);
-        ctx.strokeRect(-r * 0.85, -r * 0.85, r * 1.7, r * 1.7);
-        ctx.beginPath();
-        ctx.moveTo(-r * 0.85, 0);
-        ctx.lineTo(r * 0.85, 0);
-        ctx.stroke();
+      case 'splitter':
+        blit(this.enemySprite(shape, col, r), Math.PI / 4 + Math.sin(e.t * 2) * 0.2);
         break;
-      }
       case 'bulwark': {
-        ctx.beginPath();
-        for (let i = 0; i < 6; i++) {
-          const a = (i / 6) * TAU + e.t * 0.3;
-          const px = Math.cos(a) * r;
-          const py = Math.sin(a) * r;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        // hexagon rotates; inner square stays fixed (matches original draw)
+        blit(this.enemySprite(shape, col, r), e.t * 0.3);
+        ctx.strokeStyle = col;
         ctx.lineWidth = 1.4;
-        ctx.strokeRect(-r * 0.45, -r * 0.45, r * 0.9, r * 0.9);
+        ctx.strokeRect(x - r * 0.45, y - r * 0.45, r * 0.9, r * 0.9);
         break;
       }
       case 'orbiter': {
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, TAU);
-        ctx.stroke();
-        ctx.fillStyle = col;
-        ctx.beginPath();
-        ctx.arc(0, 0, r * 0.4, 0, TAU);
-        ctx.fill();
+        blit(this.enemySprite(shape, col, r), 0);
         // charging indicator
         if (e.shootTimer < 0.5) {
           ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.6;
           ctx.beginPath();
-          ctx.arc(0, 0, r + 4, 0, TAU);
+          ctx.arc(x, y, r + 4, 0, TAU);
           ctx.stroke();
         }
         break;
       }
       case 'volatile': {
-        // spiked bomber, blinks faster as the fuse burns
         const fused = e.fuseT >= 0;
         const blink = fused && Math.floor(this.t * (10 + (1 - Math.max(e.fuseT, 0)) * 18)) % 2 === 0;
-        ctx.strokeStyle = blink ? '#ffffff' : col;
-        ctx.fillStyle = blink ? 'rgba(255,120,40,0.9)' : 'rgba(20,8,16,0.82)';
-        ctx.beginPath();
-        for (let i = 0; i < 10; i++) {
-          const a = (i / 10) * TAU + e.t * 2;
-          const rr = i % 2 === 0 ? r * 1.25 : r * 0.62;
-          const px = Math.cos(a) * rr;
-          const py = Math.sin(a) * rr;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // fuse core
+        blit(this.enemySprite('volatile', col, r, blink), e.t * 2);
+        // fuse core (pulsates live)
         ctx.fillStyle = blink ? '#ffffff' : '#ffd166';
         ctx.beginPath();
-        ctx.arc(0, 0, r * (fused ? 0.5 + Math.sin(this.t * 24) * 0.18 : 0.3), 0, TAU);
+        ctx.arc(x, y, r * (fused ? 0.5 + Math.sin(this.t * 24) * 0.18 : 0.3), 0, TAU);
         ctx.fill();
         break;
       }
       case 'lancer': {
-        ctx.rotate(angle);
-        // long needle hull
-        ctx.fillStyle = 'rgba(20,8,16,0.82)';
-        ctx.beginPath();
-        ctx.moveTo(r * 1.6, 0);
-        ctx.lineTo(-r * 0.7, r * 0.62);
-        ctx.lineTo(-r * 1.15, 0);
-        ctx.lineTo(-r * 0.7, -r * 0.62);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        blit(this.enemySprite('lancer', col, r), aim);
         // charge glow while aiming the heavy bolt
         if (e.shootTimer < 0.8) {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(aim);
           ctx.fillStyle = '#fff6c9';
           ctx.beginPath();
           ctx.arc(r * 1.3, 0, 3 + (0.8 - e.shootTimer) * 5, 0, TAU);
           ctx.fill();
+          ctx.restore();
         }
         break;
       }
       case 'mender': {
-        // ringed caretaker with a rotating cross
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, TAU);
-        ctx.stroke();
-        ctx.save();
-        ctx.rotate(e.t * 1.4);
-        ctx.fillStyle = col;
-        ctx.fillRect(-r * 0.16, -r * 0.7, r * 0.32, r * 1.4);
-        ctx.fillRect(-r * 0.7, -r * 0.16, r * 1.4, r * 0.32);
-        ctx.restore();
+        blit(this.enemySprite('mender', col, r, false), 0); // static ring
+        blit(this.enemySprite('mender', col, r, true), e.t * 1.4); // rotating cross
         // heal pulse telegraph
         if (e.healT < 0.35) {
           ctx.globalAlpha = 0.6;
           ctx.strokeStyle = '#6dffb0';
+          ctx.lineWidth = 1.6;
           ctx.beginPath();
-          ctx.arc(0, 0, r + 8, 0, TAU);
+          ctx.arc(x, y, r + 8, 0, TAU);
           ctx.stroke();
           ctx.globalAlpha = 1;
         }
@@ -784,31 +943,27 @@ export class Renderer {
       }
       case 'phantom': {
         const ghost = e.ghostT > 0;
-        ctx.globalAlpha = ghost ? 0.3 : 1;
-        // hourglass silhouette
-        ctx.fillStyle = 'rgba(20,8,16,0.82)';
-        ctx.beginPath();
-        ctx.moveTo(-r, -r);
-        ctx.lineTo(r, -r);
-        ctx.lineTo(-r, r);
-        ctx.lineTo(r, r);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        blit(this.enemySprite('phantom', col, r), 0, ghost ? 0.3 : 1);
         // phase-glow eye
         ctx.fillStyle = ghost ? '#ffffff' : col;
         ctx.beginPath();
-        ctx.arc(0, 0, r * (ghost ? 0.55 : 0.3), 0, TAU);
+        ctx.arc(x, y, r * (ghost ? 0.55 : 0.3), 0, TAU);
         ctx.fill();
-        ctx.globalAlpha = 1;
         break;
       }
-      case 'boss': {
-        this.drawBossBody(e, angle);
+      default:
         break;
-      }
     }
-    ctx.restore();
+
+    this.drawEnemyOverlays(e);
+  }
+
+  /** world-space overlays shared by all enemies (telegraphs, elite ring, hp bar) */
+  private drawEnemyOverlays(e: Enemy): void {
+    const ctx = this.ctx;
+    const x = e.x;
+    const y = e.y;
+    const r = e.radius;
 
     // lancer aim telegraph (world space)
     if (e.def.shape === 'lancer' && e.shootTimer < 0.8) {
@@ -843,7 +998,7 @@ export class Renderer {
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(this.t * 1.4);
-      ctx.strokeStyle = '#ff9a3d';
+      ctx.strokeStyle = this.cbColor('#ff9a3d');
       ctx.lineWidth = 2.2;
       ctx.globalAlpha = 0.85;
       ctx.setLineDash([9, 7]);
@@ -870,9 +1025,9 @@ export class Renderer {
       const w = e.radius * 2.4;
       const frac = clamp(e.hp / e.maxHp, 0, 1);
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(x - w / 2, y - e.radius - 12, w, 4);
-      ctx.fillStyle = e.elite ? '#ff9a3d' : '#ff4d7e';
-      ctx.fillRect(x - w / 2, y - e.radius - 12, w * frac, 4);
+      ctx.fillRect(x - w / 2, y - r - 12, w, 4);
+      ctx.fillStyle = this.cbColor(e.elite ? '#ff9a3d' : '#ff4d7e');
+      ctx.fillRect(x - w / 2, y - r - 12, w * frac, 4);
     }
   }
 

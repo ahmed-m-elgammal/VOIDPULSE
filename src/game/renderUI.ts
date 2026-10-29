@@ -99,6 +99,9 @@ export function drawMenus(r: Renderer, g: Game): void {
     case 'market':
       drawMarket(r, g);
       break;
+    case 'settings':
+      drawSettings(r, g);
+      break;
     case 'paused':
       drawPause(r, g);
       break;
@@ -162,21 +165,33 @@ function drawTitle(r: Renderer, g: Game): void {
     ['title_pass', 'VOIDPASS — SEASON 1', 'B'],
     ['title_market', 'BLACK MARKET', 'N'],
     ['title_perks', 'PERMANENT UPGRADES', 'E'],
+    ['title_settings', 'SETTINGS', 'G'],
     ['title_help', 'HOW TO PLAY', 'H'],
   ];
   const mw = 380;
   const mx = (W - mw) / 2;
-  let my = H * 0.47;
+  // adaptive spacing keeps 6 items clear of the stats footer on short viewports
+  const step = H < 700 ? 44 : 48;
+  let my = Math.min(H * 0.47, H - 40 - items.length * step - 40);
   for (const [id, label, key] of items) {
     const idx = items.findIndex((i) => i[0] === id);
     const selected = g.menuIndex === idx;
-    const accent = id === 'title_start' ? '#4de8ff' : id === 'title_pass' ? '#c9b8ff' : id === 'title_market' ? '#ffd166' : '#9adcff';
+    const accent =
+      id === 'title_start'
+        ? '#4de8ff'
+        : id === 'title_pass'
+          ? '#c9b8ff'
+          : id === 'title_market'
+            ? '#ffd166'
+            : id === 'title_settings'
+              ? '#aebdd4'
+              : '#9adcff';
     button(r, g, id, label, mx, my, mw, 40, accent, 14);
     ctx.font = font(10, 600);
     ctx.textAlign = 'right';
     ctx.fillStyle = selected ? '#ffd94d' : '#5a6a85';
     ctx.fillText(`[${key}]`, mx + mw + 34, my + 25);
-    my += 48;
+    my += step;
   }
 
   // stats footer
@@ -193,7 +208,7 @@ function drawTitle(r: Renderer, g: Game): void {
   ctx.fillText('WASD move · SPACE dash · weapons auto-fire · [M] mute', W / 2, H - 44);
   ctx.font = font(10, 500);
   ctx.fillStyle = '#3d4a63';
-  ctx.fillText('VOIDPULSE v1.0.0 — SEASON ONE', W / 2, H - 24);
+  ctx.fillText('VOIDPULSE v1.1.0 — SEASON ONE', W / 2, H - 24);
 }
 
 function drawPerks(r: Renderer, g: Game): void {
@@ -390,7 +405,79 @@ function drawPause(r: Renderer, g: Game): void {
   const by = 380;
   button(r, g, 'pause_resume', 'RESUME [P]', bx, by, bw * 0.48, 44, '#4de8ff');
   button(r, g, 'pause_restart', 'RESTART [R]', bx + bw * 0.52, by, bw * 0.48, 44, '#ffb14d');
-  button(r, g, 'pause_quit', 'ABANDON RUN [Q]', bx, by + 56, bw, 44, '#ff5c5c');
+  button(r, g, 'pause_settings', 'SETTINGS [G]', bx, by + 56, bw * 0.48, 44, '#aebdd4');
+  button(r, g, 'pause_quit', 'ABANDON RUN [Q]', bx + bw * 0.52, by + 56, bw * 0.48, 44, '#ff5c5c');
+}
+
+// ================= SETTINGS =================
+
+interface SettingRow {
+  key: string;
+  label: string;
+  value: (g: Game) => string;
+  hint: string;
+}
+
+const SETTING_ROWS: SettingRow[] = [
+  { key: 'volMaster', label: 'MASTER VOLUME', value: (g) => `${Math.round(g.settings.volMaster * 100)}%`, hint: 'overall loudness' },
+  { key: 'volMusic', label: 'MUSIC', value: (g) => `${Math.round(g.settings.volMusic * 100)}%`, hint: 'synthwave engine' },
+  { key: 'volSfx', label: 'SFX', value: (g) => `${Math.round(g.settings.volSfx * 100)}%`, hint: 'weapons / impacts' },
+  { key: 'shake', label: 'SCREEN SHAKE', value: (g) => `${Math.round(g.settings.shake * 100)}%`, hint: 'impact camera kick' },
+  { key: 'reduceFlash', label: 'REDUCE FLASHES', value: (g) => (g.settings.reduceFlash ? 'ON' : 'OFF'), hint: 'tones down screen flashes' },
+  { key: 'dmgNumbers', label: 'DAMAGE NUMBERS', value: (g) => (g.settings.dmgNumbers ? 'ON' : 'OFF'), hint: 'floating combat text' },
+  { key: 'colorblind', label: 'COLORBLIND MODE', value: (g) => g.settings.colorblind.toUpperCase(), hint: 'remaps critical colors' },
+  { key: 'reducedMotion', label: 'REDUCED MOTION', value: (g) => (g.settings.reducedMotion ? 'ON' : 'OFF'), hint: 'less shake, gibs, particles' },
+];
+
+function drawSettings(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.82);
+
+  ctx.textAlign = 'center';
+  ctx.font = font(26, 800);
+  ctx.fillStyle = '#aebdd4';
+  ctx.fillText('SETTINGS', W / 2, 54);
+  ctx.font = font(10, 600);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('saved automatically · ←/→ adjust · ↑/↓ select', W / 2, 74);
+
+  const pw = Math.min(640, W - 60);
+  const px = (W - pw) / 2;
+  const rowH = 52;
+  let y = 100;
+  for (let i = 0; i < SETTING_ROWS.length; i++) {
+    const row = SETTING_ROWS[i];
+    const selected = g.settingsIndex === i;
+    panel(r, px, y, pw, rowH - 6, selected ? 'rgba(174,189,212,0.7)' : 'rgba(90,160,255,0.25)');
+
+    ctx.textAlign = 'left';
+    ctx.font = font(13, 700);
+    ctx.fillStyle = selected ? '#ffffff' : '#aebdd4';
+    ctx.fillText(row.label, px + 16, y + 22);
+    ctx.font = font(9.5, 500);
+    ctx.fillStyle = '#5a6a85';
+    ctx.fillText(row.hint, px + 16, y + 38);
+
+    // value + arrows
+    ctx.textAlign = 'right';
+    ctx.font = font(14, 800);
+    ctx.fillStyle = selected ? '#ffd94d' : '#dfeeff';
+    ctx.fillText(row.value(g), px + pw - 56, y + 27);
+    reg(r, g, `set_left_${row.key}`, px + pw - 108, y + 8, 26, rowH - 22);
+    reg(r, g, `set_right_${row.key}`, px + pw - 26, y + 8, 26, rowH - 22);
+    ctx.font = font(14, 800);
+    ctx.fillStyle = '#8fa3c0';
+    ctx.fillText('◀', px + pw - 95, y + 29);
+    ctx.fillText('▶', px + pw - 13, y + 29);
+
+    // whole row = click cycles up
+    reg(r, g, `set_right_${row.key}`, px, y, pw, rowH - 6);
+    y += rowH;
+  }
+
+  button(r, g, 'settings_back', 'BACK [ESC]', px, y + 8, pw, 40, '#9adcff');
 }
 
 function statRow(r: Renderer, x: number, y: number, w: number, label: string, value: string, color = '#ffffff'): void {
@@ -927,6 +1014,8 @@ export function drawLevelUpCards(r: Renderer, g: Game): void {
   const H = r.viewH;
   dim(r, 0.72);
 
+  g.cardAnimT += 1 / 60; // slide-in clock
+
   ctx.textAlign = 'center';
   ctx.font = font(28, 800);
   ctx.fillStyle = '#6dff8c';
@@ -945,7 +1034,16 @@ export function drawLevelUpCards(r: Renderer, g: Game): void {
   for (let i = 0; i < g.cards.length; i++) {
     const card = g.cards[i];
     const x = x0 + i * (cardW + gap);
+    // staggered spring slide-in
+    const k = Math.max(0, Math.min(1, g.cardAnimT * 3.2 - i * 0.14));
+    const back = 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2); // easeOutBack-ish
+    const yo = (1 - back) * 42;
+    ctx.save();
+    ctx.globalAlpha = k;
+    ctx.translate(0, yo);
     drawCard(r, g, card, i, x, y0, cardW, cardH);
+    ctx.restore();
+    ctx.globalAlpha = 1;
   }
 
   // reroll

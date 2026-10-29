@@ -4,6 +4,7 @@ import type {
   Afterimage,
   Arc,
   BossState,
+  Bullet,
   ButtonRect,
   CardOption,
   Enemy,
@@ -15,6 +16,7 @@ import type {
   InputState,
   Particle,
   Player,
+  Settings,
   Shock,
 } from './types';
 import {
@@ -32,7 +34,7 @@ import {
 } from './content';
 import { AudioEngine } from './audio';
 import { loadMeta, saveMeta } from './save';
-import { makeRng, sweepDead } from './utils';
+import { Pool, makeRng, sweepDead } from './utils';
 import { applyCard, generateCards } from './cards';
 import { addHeat, damagePlayer as dmgPlayer, updatePlayer } from './player';
 import {
@@ -90,7 +92,7 @@ export class Game {
 
   player!: Player;
   enemies: Enemy[] = [];
-  bullets: import('./types').Bullet[] = [];
+  bullets: Bullet[] = [];
   ebullets: EBullet[] = [];
   gems: Gem[] = [];
   particles: Particle[] = [];
@@ -104,6 +106,46 @@ export class Game {
   bossState: BossState | null = null;
   bossBanner: { name: string; title: string; t: number; color: string } | null = null;
   enemyGrid = new Map<number, Enemy[]>();
+  enemyById = new Map<number, Enemy>();
+
+  // object pools — zero per-frame allocation churn
+  bulletPool = new Pool<Bullet>(() => ({
+    x: 0, y: 0, vx: 0, vy: 0, r: 5, dmg: 10, pierce: 0, life: 2,
+    kind: 'pulse', crit: false, homing: 0, aoe: 0, angle: 0, trailT: 0, tgtEid: undefined, retargetT: undefined, dead: false,
+  }));
+  ebulletPool = new Pool<EBullet>(() => ({
+    x: 0, y: 0, vx: 0, vy: 0, r: 6, dmg: 10, life: 5, mine: undefined, armT: undefined, telegraph: undefined, dead: false,
+  }));
+  particlePool = new Pool<Particle>(() => ({
+    x: 0, y: 0, vx: 0, vy: 0, life: 0.5, maxLife: 0.5, size: 2, color: '#ffffff', drag: 0.9, glow: true,
+    kind: 'dot', rot: 0, vrot: 0, dead: false,
+  }));
+  textPool = new Pool<FloatText>(() => ({
+    x: 0, y: 0, vx: 0, vy: -46, life: 0.75, maxLife: 0.75, text: '', color: '#ffffff', size: 12, dead: false,
+  }));
+  gemPool = new Pool<Gem>(() => ({ x: 0, y: 0, vx: 0, vy: 0, value: 1, kind: 'xp', t: 0, magnet: false, dead: false }));
+  afterimagePool = new Pool<Afterimage>(() => ({ x: 0, y: 0, angle: 0, life: 0.25, maxLife: 0.25, color: '#4de8ff', dead: false }));
+  arcPool = new Pool<Arc>(() => ({ x: 0, y: 0, x2: 0, y2: 0, life: 0.14, maxLife: 0.14, color: '#4de8ff', seed: 0, dead: false }));
+  shockPool = new Pool<Shock>(() => ({
+    x: 0, y: 0, r: 8, maxR: 100, speed: 600, life: 0.25, maxLife: 0.25, color: '#4de8ff', width: 4, dmg: 0, knock: 0,
+    hitIds: new Set<number>(), dead: false,
+  }));
+  enemyPool = new Pool<Enemy>(() => ({
+    eid: 0, def: null as unknown as EnemyDef, x: 0, y: 0, vx: 0, vy: 0, hp: 1, maxHp: 1, radius: 10, speed: 60,
+    damage: 5, xp: 1, score: 1, elite: false, mod: null, flash: 0, t: 0, shootTimer: 999, phase: 0, slow: 0, slowT: 0,
+    freezeT: 0, stunT: 0, knockX: 0, knockY: 0, spawnT: 0, orbHitCd: 0, zigPhase: 0, rage: 1, shieldHits: 0,
+    hitCd: new Map<number, number>(), fuseT: -1, ghostT: 0, phaseT: 0, healT: 1.2, dead: false,
+  }));
+  gridPool: Enemy[][] = [];
+
+  // JUICE state — v1.1
+  killChainT = 0; // seconds left in the current kill chain
+  killChainN = 0; // kills in the chain (drives pitch escalation)
+  slowT = 0; // dash-exit micro slow-mo
+  levelupFreeze = 0; // freeze frame before card draft opens
+  pendingCards = false; // cards ready, waiting on freeze frame
+  zoomKick = 0; // boss-kill camera punch-in
+  cardAnimT = 0; // card slide-in animation clock
 
   camera = { x: WORLD_W / 2, y: WORLD_H / 2 };
   trauma = 0;
@@ -162,6 +204,8 @@ export class Game {
   // ui
   menuIndex = 0;
   perkIndex = 0;
+  settingsIndex = 0;
+  settingsReturn: GameState = 'title';
   buttons: ButtonRect[] = [];
   mouse = { x: -100, y: -100, clicked: false };
   hintT = 0;
@@ -182,9 +226,60 @@ export class Game {
       save: () => saveMeta(data),
     };
     audio.setMuted(data.muted);
+    this.applyAudioSettings();
     this.rng = makeRng((Date.now() ^ 0x5f3759df) >>> 0);
     this.resetPlayer();
     this.attachDebug();
+  }
+
+  // ---------------- settings ----------------
+
+  get settings(): Settings {
+    return this.meta.data.settings;
+  }
+
+  private applyAudioSettings(): void {
+    const s = this.meta.data.settings;
+    this.audio.setVolumes(s.volMaster, s.volMusic, s.volSfx);
+  }
+
+  cycleSetting(key: string, dir: 1 | -1): void {
+    const s = this.meta.data.settings;
+    const stepF = (v: number, step: number): number => Math.round((v + dir * step) * 100) / 100;
+    switch (key) {
+      case 'shake':
+        s.shake = Math.max(0, Math.min(1, stepF(s.shake, 0.25)));
+        break;
+      case 'volMaster':
+        s.volMaster = Math.max(0, Math.min(1, stepF(s.volMaster, 0.1)));
+        break;
+      case 'volMusic':
+        s.volMusic = Math.max(0, Math.min(1, stepF(s.volMusic, 0.1)));
+        break;
+      case 'volSfx':
+        s.volSfx = Math.max(0, Math.min(1, stepF(s.volSfx, 0.1)));
+        break;
+      case 'reduceFlash':
+        s.reduceFlash = !s.reduceFlash;
+        break;
+      case 'dmgNumbers':
+        s.dmgNumbers = !s.dmgNumbers;
+        break;
+      case 'reducedMotion':
+        s.reducedMotion = !s.reducedMotion;
+        break;
+      case 'colorblind': {
+        const modes: Settings['colorblind'][] = ['off', 'protan', 'deutan', 'tritan'];
+        const i = modes.indexOf(s.colorblind);
+        s.colorblind = modes[(i + (dir === 1 ? 1 : modes.length - 1)) % modes.length];
+        break;
+      }
+      default:
+        return;
+    }
+    this.applyAudioSettings();
+    this.meta.save();
+    this.audio.sfx('uiMove');
   }
 
   private resetPlayer(): void {
@@ -279,6 +374,13 @@ export class Game {
     this.endlessMode = false;
     this.pendingLevels = 0;
     this.cards = [];
+    this.killChainT = 0;
+    this.killChainN = 0;
+    this.slowT = 0;
+    this.levelupFreeze = 0;
+    this.pendingCards = false;
+    this.zoomKick = 0;
+    this.cardAnimT = 0;
     this.runDashKills = 0;
     this.runElites = 0;
     this.runHeals = 0;
@@ -411,6 +513,31 @@ export class Game {
       }
     }
 
+    // level-up freeze frame: world holds, then the draft slams in
+    if (this.levelupFreeze > 0) {
+      this.levelupFreeze -= realDt;
+      if (this.levelupFreeze <= 0 && this.pendingCards) {
+        this.pendingCards = false;
+        this.state = 'levelup';
+        this.cardAnimT = 0;
+      }
+      return;
+    }
+
+    // dash-exit micro slow-mo
+    if (this.slowT > 0) {
+      this.slowT -= realDt;
+      dt = realDt * 0.5;
+    }
+
+    // kill-chain window runs on real time
+    if (this.killChainT > 0) {
+      this.killChainT -= realDt;
+      if (this.killChainT <= 0) this.killChainN = 0;
+    }
+
+    this.zoomKick = Math.max(0, this.zoomKick - realDt * 2.2);
+
     // hit-stop freezes world but not fx
     if (this.hitStop > 0) {
       this.hitStop -= realDt;
@@ -440,7 +567,7 @@ export class Game {
     updateBullets(this, dt);
     updateEBullets(this, dt);
     updateShocks(this, dt);
-    sweepDead(this.enemies); // bullets/shocks may have killed enemies
+    sweepDead(this.enemies, (e) => this.enemyPool.release(e)); // bullets/shocks may have killed enemies
     updateGems(this, dt);
     updateParticles(this, dt);
 
@@ -513,43 +640,43 @@ export class Game {
     const eliteMult = elite ? 6 : 1;
     const mod = elite ? pickMod(this.rng) : null;
     const hp = base.hp * hpScale * eliteMult;
-    const e: Enemy = {
-      eid: this.nextEid(),
-      def: base,
-      x,
-      y,
-      vx: 0,
-      vy: 0,
-      hp,
-      maxHp: hp,
-      radius: base.radius * (elite ? 1.55 : 1),
-      speed: base.speed * spdScale * (mod === 'swift' ? 1.45 : 1),
-      damage: base.damage * dmgScale * (elite ? 1.4 : 1),
-      xp: base.xp * (elite ? 6 : 1),
-      score: base.score * (elite ? 8 : 1),
-      elite,
-      mod,
-      flash: 0,
-      t: 0,
-      shootTimer: base.shoot ? base.shoot.cd * (0.5 + Math.random()) : 999,
-      phase: 0,
-      slow: 0,
-      slowT: 0,
-      freezeT: 0,
-      stunT: 0,
-      knockX: 0,
-      knockY: 0,
-      spawnT: 0.45,
-      orbHitCd: 0,
-      zigPhase: Math.random() * Math.PI * 2,
-      rage: 1,
-      shieldHits: mod === 'shield' ? 3 : 0,
-      hitCd: new Map<number, number>(),
-      fuseT: -1,
-      ghostT: 0,
-      phaseT: 0,
-      healT: 1.2,
-    };
+    const e = this.enemyPool.acquire();
+    e.eid = this.nextEid();
+    e.def = base;
+    e.x = x;
+    e.y = y;
+    e.vx = 0;
+    e.vy = 0;
+    e.hp = hp;
+    e.maxHp = hp;
+    e.radius = base.radius * (elite ? 1.55 : 1);
+    e.speed = base.speed * spdScale * (mod === 'swift' ? 1.45 : 1);
+    e.damage = base.damage * dmgScale * (elite ? 1.4 : 1);
+    e.xp = base.xp * (elite ? 6 : 1);
+    e.score = base.score * (elite ? 8 : 1);
+    e.elite = elite;
+    e.mod = mod;
+    e.flash = 0;
+    e.t = 0;
+    e.shootTimer = base.shoot ? base.shoot.cd * (0.5 + Math.random()) : 999;
+    e.phase = 0;
+    e.slow = 0;
+    e.slowT = 0;
+    e.freezeT = 0;
+    e.stunT = 0;
+    e.knockX = 0;
+    e.knockY = 0;
+    e.spawnT = 0.45;
+    e.orbHitCd = 0;
+    e.zigPhase = Math.random() * Math.PI * 2;
+    e.rage = 1;
+    e.shieldHits = mod === 'shield' ? 3 : 0;
+    e.hitCd.clear();
+    e.fuseT = -1;
+    e.ghostT = 0;
+    e.phaseT = 0;
+    e.healT = 1.2;
+    e.dead = false;
     this.enemies.push(e);
     if (elite) {
       this.spawnParticleBurst(x, y, '#ff9a3d', 12, 160, 3);
@@ -559,19 +686,39 @@ export class Game {
 
   damageEnemy(e: Enemy, dmg: number, crit: boolean, source: string, silent = false): void {
     if (e.hp <= 0) return;
+    const hpBefore = e.hp;
     e.hp -= dmg;
     e.flash = 1;
     if (!silent && this.texts.length < MAX_TEXTS) {
-      this.addText(
-        e.x + (Math.random() - 0.5) * 14,
-        e.y - e.radius - 6,
-        String(Math.round(dmg)),
-        crit ? '#ffe066' : '#ffffff',
-        crit ? 15 : 11,
-        crit
-      );
+      if (this.settings.dmgNumbers) {
+        // damage number tiers: crit = gold arc, overkill = red slam
+        if (crit) {
+          this.addText(
+            e.x + (Math.random() - 0.5) * 14,
+            e.y - e.radius - 6,
+            String(Math.round(dmg)),
+            '#ffe066',
+            17,
+            true,
+            (Math.random() - 0.5) * 46
+          );
+        } else {
+          this.addText(
+            e.x + (Math.random() - 0.5) * 14,
+            e.y - e.radius - 6,
+            String(Math.round(dmg)),
+            '#ffffff',
+            11
+          );
+        }
+      }
+      if (crit) this.hitStop = Math.max(this.hitStop, 0.04); // micro-freeze on crits
     }
     if (e.hp <= 0) {
+      const overkill = dmg - hpBefore;
+      if (overkill > e.maxHp * 0.4 && this.texts.length < MAX_TEXTS && this.settings.dmgNumbers) {
+        this.addText(e.x, e.y - e.radius - 20, `${Math.round(dmg)}!`, '#ff5c5c', 20, true, (Math.random() - 0.5) * 40);
+      }
       this.killEnemy(e, source);
     }
   }
@@ -584,6 +731,11 @@ export class Game {
     if (e.dead) return;
     e.dead = true;
     this.kills++;
+    // kill chain: consecutive kills within the window raise the kill SFX pitch
+    if (this.killChainT > 0) this.killChainN++;
+    else this.killChainN = 0;
+    this.killChainT = 1.5;
+    const chainRate = Math.pow(2, Math.min(this.killChainN, 7) / 12);
     if (source === 'dash' && e.def.minor && !e.elite) this.runDashKills++;
     if (e.elite) this.runElites++;
     // volatile detonation — always explodes, even when shot down
@@ -598,7 +750,7 @@ export class Game {
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * Math.PI * 2 + Math.random() * 0.4;
         if (this.ebullets.length < 320) {
-          this.ebullets.push({
+          this.spawnEBullet({
             x: e.x,
             y: e.y,
             vx: Math.cos(a) * 235,
@@ -609,7 +761,7 @@ export class Game {
           });
         }
       }
-      this.shockwaves.push({
+      this.spawnShock({
         x: e.x,
         y: e.y,
         r: 8,
@@ -621,7 +773,6 @@ export class Game {
         width: 5,
         dmg: 0,
         knock: 220,
-        hitIds: new Set<number>(),
       });
       this.audio.sfx('explode', 0.25);
       this.shake(7);
@@ -647,9 +798,26 @@ export class Game {
     }
     // fx
     this.spawnParticleBurst(e.x, e.y, e.def.color, e.elite ? 26 : 10, e.elite ? 260 : 170, e.elite ? 3.5 : 2.5);
-    this.audio.sfx(e.elite ? 'killBig' : 'kill', 0.15);
+    this.spawnGibs(e.x, e.y, e.def.color, e.elite ? 5 : 3, e.elite ? 260 : 170);
+    if (e.elite) {
+      // decorative shockwave ring sells the kill
+      this.spawnShock({
+        x: e.x,
+        y: e.y,
+        r: 8,
+        maxR: 90,
+        speed: 420,
+        life: 0.22,
+        maxLife: 0.22,
+        color: '#ffb14d',
+        width: 3,
+        dmg: 0,
+        knock: 0,
+      });
+    }
+    this.audio.sfx(e.elite ? 'killBig' : 'kill', 0.15, chainRate);
     this.shake(e.elite ? 4 : 0.6);
-    if (e.elite) this.hitStop = Math.max(this.hitStop, 0.05);
+    if (e.elite) this.hitStop = Math.max(this.hitStop, 0.09);
 
     // splitter spawns
     if (e.def.splitsInto) {
@@ -667,7 +835,7 @@ export class Game {
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * Math.PI * 2;
         if (this.ebullets.length < 320) {
-          this.ebullets.push({
+          this.spawnEBullet({
             x: e.x,
             y: e.y,
             vx: Math.cos(a) * 190,
@@ -694,10 +862,12 @@ export class Game {
     this.audio.sfx('bossDie');
     this.shake(16);
     this.flashScreen('#ffffff', 0.55);
-    this.hitStop = 0.14;
+    this.hitStop = 0.18;
+    this.zoomKick = 1; // camera punch-in on the kill
     this.spawnParticleBurst(e.x, e.y, e.def.color, 60, 380, 5, 0.95);
     this.spawnParticleBurst(e.x, e.y, '#ffffff', 30, 260, 4, 0.92);
-    this.shockwaves.push({
+    this.spawnGibs(e.x, e.y, e.def.color, 9, 340);
+    this.spawnShock({
       x: e.x,
       y: e.y,
       r: 20,
@@ -709,7 +879,6 @@ export class Game {
       width: 10,
       dmg: 40,
       knock: 420,
-      hitIds: new Set<number>(),
     });
     // xp shower
     const chunks = 10;
@@ -743,11 +912,15 @@ export class Game {
   }
 
   private openLevelUp(): void {
+    // don't stack drafts while one is already pending/open
+    if (this.pendingCards || this.state === 'levelup') return;
     this.cards = generateCards(this);
     this.rerolls = 1;
     this.cardHover = -1;
-    this.state = 'levelup';
+    this.pendingCards = true;
+    this.levelupFreeze = 0.15; // freeze frame, then the draft slams in
     this.audio.sfx('levelup');
+    this.spawnParticleBurst(this.player.x, this.player.y, '#6dff8c', 26, 240, 3.5);
     // restore a dash charge as a small mercy
     this.player.dashCharges = Math.min(
       PLAYER_BASE.dashCharges + this.player.stats.extraDash + this.meta.perkTiers('batteryCore'),
@@ -764,6 +937,7 @@ export class Game {
     if (this.pendingLevels > 0) {
       this.cards = generateCards(this);
       this.rerolls = 1;
+      this.cardAnimT = 0;
     } else {
       this.state = 'playing';
     }
@@ -773,6 +947,7 @@ export class Game {
     if (this.state !== 'levelup' || this.rerolls <= 0) return;
     this.rerolls--;
     this.cards = generateCards(this);
+    this.cardAnimT = 0;
     this.audio.sfx('reroll');
   }
 
@@ -895,52 +1070,168 @@ export class Game {
 
   // ---------------- fx helpers ----------------
 
-  addText(x: number, y: number, text: string, color: string, size = 12, bold = false): void {
+  addText(x: number, y: number, text: string, color: string, size = 12, bold = false, vx = 0): void {
     if (this.texts.length >= MAX_TEXTS + 20) return;
-    this.texts.push({
-      x,
-      y,
-      vy: -46,
-      life: bold ? 1.1 : 0.75,
-      maxLife: bold ? 1.1 : 0.75,
-      text,
-      color,
-      size,
-    });
+    const t = this.textPool.acquire();
+    t.x = x;
+    t.y = y;
+    t.vx = vx;
+    t.vy = -46;
+    t.life = bold ? 1.1 : 0.75;
+    t.maxLife = t.life;
+    t.text = text;
+    t.color = color;
+    t.size = size;
+    t.dead = false;
+    this.texts.push(t);
   }
 
   spawnParticle(x: number, y: number, vx: number, vy: number, life: number, size: number, color: string, drag = 0.9): void {
     if (this.particles.length >= MAX_PARTICLES) return;
-    this.particles.push({ x, y, vx, vy, life, maxLife: life, size, color, drag, glow: true });
+    const p = this.particlePool.acquire();
+    p.x = x;
+    p.y = y;
+    p.vx = vx;
+    p.vy = vy;
+    p.life = life;
+    p.maxLife = life;
+    p.size = size;
+    p.color = color;
+    p.drag = drag;
+    p.glow = true;
+    p.kind = 'dot';
+    p.rot = 0;
+    p.vrot = 0;
+    p.dead = false;
+    this.particles.push(p);
   }
 
   spawnParticleBurst(x: number, y: number, color: string, count: number, speed: number, size: number, drag = 0.88): void {
-    for (let i = 0; i < count; i++) {
+    // reduced motion: half the particles, same energy
+    const n = this.settings.reducedMotion ? Math.ceil(count * 0.5) : count;
+    for (let i = 0; i < n; i++) {
       if (this.particles.length >= MAX_PARTICLES) return;
       const a = Math.random() * Math.PI * 2;
       const s = speed * (0.3 + Math.random() * 0.7);
-      this.particles.push({
-        x,
-        y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s,
-        life: 0.35 + Math.random() * 0.4,
-        maxLife: 0.75,
-        size: size * (0.6 + Math.random() * 0.8),
-        color,
-        drag,
-        glow: true,
-      });
+      const p = this.particlePool.acquire();
+      p.x = x;
+      p.y = y;
+      p.vx = Math.cos(a) * s;
+      p.vy = Math.sin(a) * s;
+      p.life = 0.35 + Math.random() * 0.4;
+      p.maxLife = 0.75;
+      p.size = size * (0.6 + Math.random() * 0.8);
+      p.color = color;
+      p.drag = drag;
+      p.glow = true;
+      p.kind = 'dot';
+      p.rot = 0;
+      p.vrot = 0;
+      p.dead = false;
+      this.particles.push(p);
     }
   }
 
+  /** spinning hull fragments — enemies shatter instead of just popping */
+  spawnGibs(x: number, y: number, color: string, count: number, speed: number): void {
+    if (this.settings.reducedMotion) return;
+    for (let i = 0; i < count; i++) {
+      if (this.particles.length >= MAX_PARTICLES) return;
+      const a = Math.random() * Math.PI * 2;
+      const s = speed * (0.35 + Math.random() * 0.75);
+      const p = this.particlePool.acquire();
+      p.x = x;
+      p.y = y;
+      p.vx = Math.cos(a) * s;
+      p.vy = Math.sin(a) * s;
+      p.life = 0.5 + Math.random() * 0.4;
+      p.maxLife = p.life;
+      p.size = 2.2 + Math.random() * 2.6;
+      p.color = color;
+      p.drag = 0.82;
+      p.glow = false;
+      p.kind = 'gib';
+      p.rot = Math.random() * Math.PI * 2;
+      p.vrot = (Math.random() - 0.5) * 22;
+      p.dead = false;
+      this.particles.push(p);
+    }
+  }
+
+  spawnEBullet(o: Partial<EBullet>): EBullet | null {
+    if (this.ebullets.length >= 340) return null;
+    const b = this.ebulletPool.acquire();
+    b.x = 0;
+    b.y = 0;
+    b.vx = 0;
+    b.vy = 0;
+    b.r = 6;
+    b.dmg = 10;
+    b.life = 5;
+    b.mine = undefined;
+    b.armT = undefined;
+    b.telegraph = undefined;
+    b.dead = false;
+    Object.assign(b, o);
+    this.ebullets.push(b);
+    return b;
+  }
+
+  spawnShock(o: Partial<Shock>): Shock {
+    const s = this.shockPool.acquire();
+    s.x = 0;
+    s.y = 0;
+    s.r = 8;
+    s.maxR = 100;
+    s.speed = 600;
+    s.life = 0.25;
+    s.maxLife = 0.25;
+    s.color = '#4de8ff';
+    s.width = 4;
+    s.dmg = 0;
+    s.knock = 0;
+    s.hitIds.clear();
+    s.dead = false;
+    Object.assign(s, o);
+    this.shockwaves.push(s);
+    return s;
+  }
+
+  spawnAfterimage(x: number, y: number, angle: number, color: string): void {
+    const af = this.afterimagePool.acquire();
+    af.x = x;
+    af.y = y;
+    af.angle = angle;
+    af.life = 0.25;
+    af.maxLife = 0.25;
+    af.color = color;
+    af.dead = false;
+    this.afterimages.push(af);
+  }
+
+  spawnArc(x: number, y: number, x2: number, y2: number, color: string): void {
+    const a = this.arcPool.acquire();
+    a.x = x;
+    a.y = y;
+    a.x2 = x2;
+    a.y2 = y2;
+    a.life = 0.14;
+    a.maxLife = 0.14;
+    a.color = color;
+    a.seed = Math.random() * 1000;
+    a.dead = false;
+    this.arcs.push(a);
+  }
+
   shake(amount: number): void {
-    this.trauma = Math.min(1.2, this.trauma + amount / 14);
+    const s = this.settings;
+    if (s.reducedMotion) return;
+    this.trauma = Math.min(1.2, this.trauma + (amount / 14) * s.shake);
   }
 
   flashScreen(color: string, alpha: number): void {
     this.flashColor = color;
-    this.flashAlpha = Math.max(this.flashAlpha, alpha);
+    this.flashAlpha = Math.max(this.flashAlpha, alpha * (this.settings.reduceFlash ? 0.4 : 1));
   }
 
   // ---------------- ui interaction ----------------
@@ -974,6 +1265,14 @@ export class Game {
     }
     if (id === 'reroll_btn') {
       this.rerollCards();
+      return;
+    }
+    if (id.startsWith('set_left_')) {
+      this.cycleSetting(id.slice(9), -1);
+      return;
+    }
+    if (id.startsWith('set_right_')) {
+      this.cycleSetting(id.slice(10), 1);
       return;
     }
     if (id.startsWith('skin_buy_')) {
@@ -1016,6 +1315,10 @@ export class Game {
         this.state = 'perks';
         this.perkIndex = 0;
         break;
+      case 'title_settings':
+        this.state = 'settings';
+        this.settingsIndex = 0;
+        break;
       case 'title_help':
         this.state = 'help';
         break;
@@ -1044,6 +1347,15 @@ export class Game {
         break;
       case 'help_back':
         this.state = 'title';
+        break;
+      case 'settings_back':
+        this.state = 'title';
+        this.menuIndex = 0;
+        break;
+      case 'pause_settings':
+        this.state = 'settings';
+        this.settingsIndex = 0;
+        this.settingsReturn = 'paused';
         break;
       case 'pause_resume':
         this.togglePause();
@@ -1094,7 +1406,7 @@ export class Game {
     switch (this.state) {
       case 'title': {
         if (code === 'Enter' || code === 'NumpadEnter') {
-          const actions = ['title_start', 'title_pass', 'title_market', 'title_perks', 'title_help'];
+          const actions = ['title_start', 'title_pass', 'title_market', 'title_perks', 'title_settings', 'title_help'];
           this.onButton(actions[this.menuIndex] ?? 'title_start');
         } else if (code === 'KeyB') {
           this.state = 'pass';
@@ -1104,14 +1416,35 @@ export class Game {
         } else if (code === 'KeyE') {
           this.state = 'perks';
           this.perkIndex = 0;
+        } else if (code === 'KeyG') {
+          this.state = 'settings';
+          this.settingsIndex = 0;
         } else if (code === 'KeyH') this.state = 'help';
         else if (code === 'ArrowUp' || code === 'KeyW') {
-          this.menuIndex = (this.menuIndex + 4) % 5;
+          this.menuIndex = (this.menuIndex + 5) % 6;
           this.audio.sfx('uiMove');
         } else if (code === 'ArrowDown' || code === 'KeyS') {
-          this.menuIndex = (this.menuIndex + 1) % 5;
+          this.menuIndex = (this.menuIndex + 1) % 6;
           this.audio.sfx('uiMove');
         } else if (code === 'KeyM') this.toggleMute();
+        break;
+      }
+      case 'settings': {
+        const keys = ['volMaster', 'volMusic', 'volSfx', 'shake', 'reduceFlash', 'dmgNumbers', 'colorblind', 'reducedMotion'];
+        if (code === 'Escape' || code === 'KeyG') {
+          this.state = this.settingsReturn === 'paused' ? 'paused' : 'title';
+          if (this.settingsReturn !== 'paused') this.menuIndex = 0;
+        } else if (code === 'ArrowUp' || code === 'KeyW') {
+          this.settingsIndex = (this.settingsIndex + keys.length - 1) % keys.length;
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowDown' || code === 'KeyS') {
+          this.settingsIndex = (this.settingsIndex + 1) % keys.length;
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowLeft' || code === 'KeyA') {
+          this.cycleSetting(keys[this.settingsIndex], -1);
+        } else if (code === 'ArrowRight' || code === 'KeyD') {
+          this.cycleSetting(keys[this.settingsIndex], 1);
+        }
         break;
       }
       case 'perks': {
@@ -1147,6 +1480,7 @@ export class Game {
         if (code === 'Escape' || code === 'KeyP') this.togglePause();
         else if (code === 'KeyQ') this.quitToTitle();
         else if (code === 'KeyR') this.startRun();
+        else if (code === 'KeyG') this.onButton('pause_settings');
         else if (code === 'KeyM') this.toggleMute();
         break;
       }

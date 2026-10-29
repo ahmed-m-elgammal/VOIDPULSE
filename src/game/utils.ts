@@ -69,15 +69,32 @@ export function shuffle<T>(arr: T[], rnd: () => number): T[] {
   return arr;
 }
 
-/** remove items where dead === true, swap-pop */
-export function sweepDead<T extends { dead?: boolean }>(arr: T[]): void {
+/** remove items where dead === true, swap-pop; optionally recycle to a pool */
+export function sweepDead<T extends { dead?: boolean }>(arr: T[], release?: (o: T) => void): void {
   let i = 0;
   while (i < arr.length) {
     if (arr[i].dead) {
+      const dead = arr[i];
       arr[i] = arr[arr.length - 1];
       arr.pop();
+      release?.(dead);
     } else {
       i++;
     }
+  }
+}
+
+/** simple free-list object pool — kills per-frame allocation churn */
+export class Pool<T> {
+  private free: T[] = [];
+  constructor(private make: () => T, private cap = 4096) {}
+  acquire(): T {
+    return this.free.pop() ?? this.make();
+  }
+  release(o: T): void {
+    if (this.free.length < this.cap) this.free.push(o);
+  }
+  get pooled(): number {
+    return this.free.length;
   }
 }

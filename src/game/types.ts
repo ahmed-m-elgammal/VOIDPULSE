@@ -6,11 +6,25 @@ export type GameState =
   | 'help'
   | 'pass'
   | 'market'
+  | 'settings'
   | 'playing'
   | 'levelup'
   | 'paused'
   | 'gameover'
   | 'victory';
+
+export type ColorblindMode = 'off' | 'protan' | 'deutan' | 'tritan';
+
+export interface Settings {
+  shake: number; // 0..1 multiplier
+  reduceFlash: boolean;
+  dmgNumbers: boolean;
+  colorblind: ColorblindMode;
+  reducedMotion: boolean;
+  volMaster: number; // 0..1
+  volMusic: number;
+  volSfx: number;
+}
 
 export type Currency = 'cores' | 'prisms';
 
@@ -300,6 +314,8 @@ export interface Bullet {
   aoe: number;
   angle: number;
   trailT: number;
+  tgtEid?: number; // cached homing target (validated by eid)
+  retargetT?: number; // time until next target search
   dead?: boolean;
 }
 
@@ -328,12 +344,16 @@ export interface Particle {
   color: string;
   drag: number;
   glow: boolean;
+  kind?: 'dot' | 'gib';
+  rot?: number; // gib rotation
+  vrot?: number; // gib angular velocity
   dead?: boolean;
 }
 
 export interface FloatText {
   x: number;
   y: number;
+  vx: number;
   vy: number;
   life: number;
   maxLife: number;
@@ -497,6 +517,8 @@ export interface MetaSave {
   life: LifeStats;
   // BP lifetime
   bpXpTotal: number;
+  // accessibility & audio settings
+  settings: Settings;
 }
 
 export interface ButtonRect {

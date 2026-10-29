@@ -94,8 +94,7 @@ export function createBoss(g: Game, defIndex: number, hpMult: number): Enemy {
 }
 
 function ebullet(g: Game, x: number, y: number, vx: number, vy: number, dmg: number, r = 7): void {
-  if (g.ebullets.length >= MAX_EBULLETS) return;
-  g.ebullets.push({ x, y, vx, vy, r, dmg, life: 6 });
+  g.spawnEBullet({ x, y, vx, vy, r, dmg, life: 6 });
 }
 
 function ring(g: Game, x: number, y: number, count: number, speed: number, dmg: number, offset = 0, r = 7): void {
@@ -374,7 +373,7 @@ function executePattern(g: Game, e: Enemy, bs: BossState, id: string, nx: number
         const spread = (i - (count - 1) / 2) * 0.42;
         const a = aim + spread;
         const dist = 180 + Math.random() * 320;
-        g.ebullets.push({
+        g.spawnEBullet({
           x: e.x + Math.cos(a) * dist,
           y: e.y + Math.sin(a) * dist,
           vx: 0,

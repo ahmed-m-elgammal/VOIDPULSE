@@ -169,6 +169,22 @@ export function applyCard(g: Game, card: CardOption): void {
           g.flashScreen(WEAPONS[evo.into].color, 0.5);
           g.addText(p.x, p.y - 50, `${WEAPONS[evo.into].name}`, WEAPONS[evo.into].color, 20, true);
           g.shake(5);
+          // evolution = the biggest moment in a run: hit-stop tier + burst
+          g.hitStop = Math.max(g.hitStop, 0.22);
+          g.spawnParticleBurst(p.x, p.y, WEAPONS[evo.into].color, 34, 300, 4, 0.93);
+          g.spawnShock({
+            x: p.x,
+            y: p.y,
+            r: 10,
+            maxR: 180,
+            speed: 560,
+            life: 0.32,
+            maxLife: 0.32,
+            color: WEAPONS[evo.into].color,
+            width: 4,
+            dmg: 0,
+            knock: 140,
+          });
         }
       }
       g.audio.sfx('levelup');

@@ -1,7 +1,7 @@
 // ===== VOIDPULSE :: persistent meta progression (localStorage) =====
 // v2 — SEASON ONE: battle pass, market, contracts, skins, boosters.
 
-import type { LifeStats, MetaSave } from './types';
+import type { LifeStats, MetaSave, Settings } from './types';
 import { META_PERKS } from './content';
 import { CONTRACT_POOL } from './economy';
 
@@ -10,6 +10,19 @@ const KEY_V1 = 'voidpulse_save_v1';
 
 export function defaultLife(): LifeStats {
   return { kills: 0, elites: 0, bosses: 0, dashKills: 0, overdrive: 0, coresEarned: 0, heals: 0 };
+}
+
+export function defaultSettings(): Settings {
+  return {
+    shake: 1,
+    reduceFlash: false,
+    dmgNumbers: true,
+    colorblind: 'off',
+    reducedMotion: false,
+    volMaster: 1,
+    volMusic: 1,
+    volSfx: 1,
+  };
 }
 
 export function defaultMeta(): MetaSave {
@@ -40,6 +53,7 @@ export function defaultMeta(): MetaSave {
     contractsCleared: 0,
     life: defaultLife(),
     bpXpTotal: 0,
+    settings: defaultSettings(),
   };
 }
 
@@ -89,6 +103,13 @@ export function loadMeta(): MetaSave {
     meta.boosters = { ...(parsed.boosters ?? {}) };
     meta.contractProgress = { ...(parsed.contractProgress ?? {}) };
     meta.life = { ...defaultLife(), ...(parsed.life ?? {}) };
+    meta.settings = { ...defaultSettings(), ...(parsed.settings ?? {}) };
+    // sanitize settings
+    meta.settings.shake = Math.max(0, Math.min(1, meta.settings.shake));
+    meta.settings.volMaster = Math.max(0, Math.min(1, meta.settings.volMaster));
+    meta.settings.volMusic = Math.max(0, Math.min(1, meta.settings.volMusic));
+    meta.settings.volSfx = Math.max(0, Math.min(1, meta.settings.volSfx));
+    if (!['off', 'protan', 'deutan', 'tritan'].includes(meta.settings.colorblind)) meta.settings.colorblind = 'off';
     meta.skinsOwned = parsed.skinsOwned?.length ? [...parsed.skinsOwned] : ['pulse'];
     if (!meta.skinsOwned.includes('pulse')) meta.skinsOwned.unshift('pulse');
     meta.titlesOwned = [...(parsed.titlesOwned ?? [])];

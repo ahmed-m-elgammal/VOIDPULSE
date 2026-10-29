@@ -53,6 +53,12 @@ export function updatePlayer(g: Game, dt: number): void {
     p.dashDirX = dx;
     p.dashDirY = dy;
     g.audio.sfx('dash');
+    // speed-line streaks — the dash should feel like a burst of motion
+    for (let i = 0; i < 8; i++) {
+      const a = Math.atan2(dy, dx) + Math.PI + (Math.random() - 0.5) * 1.1;
+      const s = 180 + Math.random() * 220;
+      g.spawnParticle(p.x, p.y, Math.cos(a) * s, Math.sin(a) * s, 0.28, 2.4, p.overdrive > 0 ? '#ffd94d' : '#4de8ff', 0.8);
+    }
     for (let i = 0; i < 10; i++) {
       const a = Math.random() * TAU;
       g.spawnParticle(p.x, p.y, Math.cos(a) * 60, Math.sin(a) * 60, 0.3, 3, p.overdrive > 0 ? '#ffd94d' : '#4de8ff');
@@ -68,15 +74,12 @@ export function updatePlayer(g: Game, dt: number): void {
     p.vx = p.dashDirX * ds;
     p.vy = p.dashDirY * ds;
     // dash trail afterimages
-    g.afterimages.push({
-      x: p.x,
-      y: p.y,
-      angle: p.facing,
-      life: 0.25,
-      maxLife: 0.25,
-      color: p.overdrive > 0 ? '#ffd94d' : '#4de8ff',
-    });
+    g.spawnAfterimage(p.x, p.y, p.facing, p.overdrive > 0 ? '#ffd94d' : '#4de8ff');
     dashStrike(g);
+    if (p.dashTimer <= 0) {
+      // dash-exit micro slow-mo: the world takes a breath as you land
+      g.slowT = Math.max(g.slowT, 0.09);
+    }
   } else {
     const tvx = ix * speed;
     const tvy = iy * speed;
@@ -180,7 +183,7 @@ export function addHeat(g: Game, amount: number): void {
       const a = Math.random() * TAU;
       g.spawnParticle(p.x, p.y, Math.cos(a) * 240, Math.sin(a) * 240, 0.6, 4, '#ffd94d', 0.94);
     }
-    g.shockwaves.push({
+    g.spawnShock({
       x: p.x,
       y: p.y,
       r: 10,
@@ -192,7 +195,6 @@ export function addHeat(g: Game, amount: number): void {
       width: 4,
       dmg: 0,
       knock: 120,
-      hitIds: new Set<number>(),
     });
   }
 }
@@ -225,7 +227,7 @@ export function damagePlayer(g: Game, dmg: number, sx: number, sy: number): void
     g.audio.sfx('shieldDown');
     g.addText(p.x, p.y - 30, 'BARRIER DOWN', '#9adcff', 15, true);
     g.flashScreen('#9adcff', 0.25);
-    g.shockwaves.push({
+    g.spawnShock({
       x: p.x,
       y: p.y,
       r: 10,
@@ -237,7 +239,6 @@ export function damagePlayer(g: Game, dmg: number, sx: number, sy: number): void
       width: 3,
       dmg: 0,
       knock: 180,
-      hitIds: new Set<number>(),
     });
     return;
   }
@@ -249,6 +250,7 @@ export function damagePlayer(g: Game, dmg: number, sx: number, sy: number): void
   breakHeat(g);
   g.audio.sfx('hurt');
   g.shake(9);
+  g.hitStop = Math.max(g.hitStop, 0.12); // hit-stop tier: getting hurt must be FELT
   g.flashScreen('#ff3d5e', 0.3);
   g.addText(p.x, p.y - 24, `-${real}`, '#ff5c5c', 16, true);
   // knockback away from source
@@ -267,7 +269,7 @@ export function damagePlayer(g: Game, dmg: number, sx: number, sy: number): void
       g.audio.sfx('revive');
       g.addText(p.x, p.y - 40, 'PHOENIX PROTOCOL', '#ffd166', 20, true);
       g.flashScreen('#ffd166', 0.6);
-      g.shockwaves.push({
+      g.spawnShock({
         x: p.x,
         y: p.y,
         r: 10,
@@ -279,7 +281,6 @@ export function damagePlayer(g: Game, dmg: number, sx: number, sy: number): void
         width: 6,
         dmg: 60,
         knock: 500,
-        hitIds: new Set<number>(),
       });
       for (const b of g.ebullets) b.dead = true;
       return;

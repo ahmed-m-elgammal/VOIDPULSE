@@ -17,6 +17,23 @@ export class AudioEngine {
   private targetIntensity = 0.35;
   muted = false;
   private noiseBuf: AudioBuffer | null = null;
+  // volume settings (0..1), applied to buses when ctx exists
+  private vol = { master: 1, music: 1, sfx: 1 };
+
+  private applyVolumes(): void {
+    if (!this.ctx || !this.master || !this.musicBus || !this.sfxBus) return;
+    const t = this.ctx.currentTime;
+    this.master.gain.setTargetAtTime(this.muted ? 0 : 0.55 * this.vol.master, t, 0.02);
+    this.musicBus.gain.setTargetAtTime(0.42 * this.vol.music, t, 0.02);
+    this.sfxBus.gain.setTargetAtTime(0.85 * this.vol.sfx, t, 0.02);
+  }
+
+  setVolumes(master: number, music: number, sfx: number): void {
+    this.vol.master = Math.max(0, Math.min(1, master));
+    this.vol.music = Math.max(0, Math.min(1, music));
+    this.vol.sfx = Math.max(0, Math.min(1, sfx));
+    this.applyVolumes();
+  }
 
   /** must be called from a user gesture */
   init(): void {
@@ -33,11 +50,11 @@ export class AudioEngine {
       if (!Ctor) return;
       this.ctx = new Ctor();
       this.master = this.ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.55;
+      this.master.gain.value = this.muted ? 0 : 0.55 * this.vol.master;
       this.master.connect(this.ctx.destination);
 
       this.sfxBus = this.ctx.createGain();
-      this.sfxBus.gain.value = 0.85;
+      this.sfxBus.gain.value = 0.85 * this.vol.sfx;
       this.sfxBus.connect(this.master);
 
       this.musicFilter = this.ctx.createBiquadFilter();
@@ -46,7 +63,7 @@ export class AudioEngine {
       this.musicFilter.Q.value = 0.7;
 
       this.musicBus = this.ctx.createGain();
-      this.musicBus.gain.value = 0.42;
+      this.musicBus.gain.value = 0.42 * this.vol.music;
       this.musicBus.connect(this.musicFilter);
       this.musicFilter.connect(this.master);
 
@@ -65,9 +82,7 @@ export class AudioEngine {
 
   setMuted(m: boolean): void {
     this.muted = m;
-    if (this.master && this.ctx) {
-      this.master.gain.setTargetAtTime(m ? 0 : 0.55, this.ctx.currentTime, 0.02);
-    }
+    this.applyVolumes();
   }
 
   setIntensity(v: number): void {
@@ -144,9 +159,9 @@ export class AudioEngine {
     src.stop(t0 + opts.dur + 0.05);
   }
 
-  sfx(name: string, vary = 0): void {
+  sfx(name: string, vary = 0, rate = 1): void {
     if (!this.ctx || this.muted) return;
-    const v = 1 + (Math.random() * 2 - 1) * vary;
+    const v = (1 + (Math.random() * 2 - 1) * vary) * rate;
     switch (name) {
       case 'shoot':
         this.tone({ type: 'square', f0: 760 * v, f1: 320, dur: 0.07, vol: 0.05 });
@@ -173,8 +188,8 @@ export class AudioEngine {
         this.noise({ dur: 0.045, vol: 0.05, f0: 2600 * v, f1: 1400, q: 1.4 });
         break;
       case 'kill':
-        this.tone({ type: 'triangle', f0: 520 * v, f1: 130, dur: 0.12, vol: 0.07 });
-        this.noise({ dur: 0.08, vol: 0.05, f0: 1200, f1: 300 });
+        this.tone({ type: 'triangle', f0: 520 * v, f1: 130 * rate, dur: 0.12, vol: 0.07 });
+        this.noise({ dur: 0.08, vol: 0.05, f0: 1200 * rate, f1: 300 });
         break;
       case 'killBig':
         this.tone({ type: 'sawtooth', f0: 220, f1: 50, dur: 0.4, vol: 0.16 });

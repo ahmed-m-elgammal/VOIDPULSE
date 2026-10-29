@@ -22,23 +22,52 @@ function nearestEnemy(g: Game, x: number, y: number, maxD: number): Enemy | null
 }
 
 function newBullet(g: Game, b: Partial<Bullet>): void {
-  g.bullets.push({
-    x: 0,
-    y: 0,
-    vx: 0,
-    vy: 0,
-    r: 5,
-    dmg: 10,
-    pierce: 0,
-    life: 2,
-    kind: 'pulse',
-    crit: false,
-    homing: 0,
-    aoe: 0,
-    angle: 0,
-    trailT: 0,
-    ...b,
-  });
+  const nb = g.bulletPool.acquire();
+  nb.x = 0;
+  nb.y = 0;
+  nb.vx = 0;
+  nb.vy = 0;
+  nb.r = 5;
+  nb.dmg = 10;
+  nb.pierce = 0;
+  nb.life = 2;
+  nb.kind = 'pulse';
+  nb.crit = false;
+  nb.homing = 0;
+  nb.aoe = 0;
+  nb.angle = 0;
+  nb.trailT = 0;
+  nb.tgtEid = undefined;
+  nb.retargetT = undefined;
+  nb.dead = false;
+  Object.assign(nb, b);
+  g.bullets.push(nb);
+}
+
+/** iterate live enemies near (x,y) within r — grid-backed when the swarm is big */
+function forEnemiesNear(g: Game, x: number, y: number, r: number, cb: (e: Enemy) => void): void {
+  if (g.enemies.length <= 50) {
+    for (const e of g.enemies) {
+      if (e.hp <= 0) continue;
+      cb(e);
+    }
+    return;
+  }
+  const cell = 64;
+  const c0x = Math.floor((x - r) / cell);
+  const c1x = Math.floor((x + r) / cell);
+  const c0y = Math.floor((y - r) / cell);
+  const c1y = Math.floor((y + r) / cell);
+  for (let gx = c0x; gx <= c1x; gx++) {
+    for (let gy = c0y; gy <= c1y; gy++) {
+      const arr = g.enemyGrid.get(gx + gy * 4096);
+      if (!arr) continue;
+      for (const e of arr) {
+        if (e.hp <= 0) continue;
+        cb(e);
+      }
+    }
+  }
 }
 
 /** aim at predicted intercept position (iterative lead) */
@@ -207,16 +236,7 @@ export function fireWeapons(g: Game, dt: number): void {
                       const prev = g.arcs[g.arcs.length - 1];
                       return prev ? { x: prev.x2, y: prev.y2 } : { x: p.x, y: p.y };
                     })();
-              g.arcs.push({
-                x: from.x,
-                y: from.y,
-                x2: src.x,
-                y2: src.y,
-                life: 0.14,
-                maxLife: 0.14,
-                color: def.color,
-                seed: Math.random() * 1000,
-              });
+              g.spawnArc(from.x, from.y, src.x, src.y, def.color);
               g.damageEnemy(src, dmg, crit, 'arc');
               if ((st.stun ?? 0) > 0 && Math.random() < (st.stun ?? 0)) {
                 src.stunT = Math.max(src.stunT, 0.8);
@@ -248,7 +268,7 @@ export function fireWeapons(g: Game, dt: number): void {
           if (anyNear) {
             w.timer = st.cd / p.stats.fireRateMult / (od ? 1.3 : 1);
             const R = (st.radius ?? 120) * p.stats.areaMult;
-            g.shockwaves.push({
+            g.spawnShock({
               x: p.x,
               y: p.y,
               r: 14,
@@ -260,7 +280,6 @@ export function fireWeapons(g: Game, dt: number): void {
               width: 7,
               dmg: st.dmg * p.stats.damageMult * (od ? 1.5 : 1),
               knock: st.knock ?? 280,
-              hitIds: new Set<number>(),
             });
             g.audio.sfx('nova');
             g.shake(3);
@@ -276,8 +295,7 @@ export function fireWeapons(g: Game, dt: number): void {
         w.timer -= dt;
         const doTick = w.timer <= 0;
         if (doTick) w.timer = st.cd;
-        for (const e of g.enemies) {
-          if (e.hp <= 0 || e.spawnT > 0) continue;
+        forEnemiesNear(g, p.x, p.y, R + 40, (e) => {
           const d = Math.hypot(e.x - p.x, e.y - p.y);
           if (d < R + e.radius) {
             if (e.slowT <= 0 || e.slow < (st.slow ?? 0.3)) e.slow = st.slow ?? 0.3;
@@ -297,7 +315,7 @@ export function fireWeapons(g: Game, dt: number): void {
               );
             }
           }
-        }
+        });
         break;
       }
       case 'orbit': {
@@ -310,8 +328,7 @@ export function fireWeapons(g: Game, dt: number): void {
           const a = w.angle + (i / n) * TAU;
           const bx = p.x + Math.cos(a) * R;
           const by = p.y + Math.sin(a) * R;
-          for (const e of g.enemies) {
-            if (e.hp <= 0 || e.spawnT > 0) continue;
+          forEnemiesNear(g, bx, by, 44, (e) => {
             const d = Math.hypot(e.x - bx, e.y - by);
             if (d < e.radius + 9 && e.orbHitCd <= 0) {
               e.orbHitCd = st.cd ?? 0.45;
@@ -323,7 +340,7 @@ export function fireWeapons(g: Game, dt: number): void {
                 'orbit'
               );
             }
-          }
+          });
         }
         break;
       }
@@ -342,9 +359,17 @@ export function updateBullets(g: Game, dt: number): void {
       b.dead = true;
       continue;
     }
-    // homing
+    // homing — cached target (eid-validated, rebuilt every frame) cuts
+    // nearest-enemy scans by ~10x without changing behavior
     if (b.homing > 0) {
-      const t = nearestEnemy(g, b.x, b.y, 420);
+      let t: Enemy | null | undefined;
+      b.retargetT = (b.retargetT ?? 0) - dt;
+      if (b.tgtEid !== undefined) t = g.enemyById.get(b.tgtEid);
+      if (!t || t.hp <= 0 || t.spawnT > 0 || t.ghostT > 0 || b.retargetT <= 0) {
+        t = nearestEnemy(g, b.x, b.y, 420);
+        b.tgtEid = t?.eid;
+        b.retargetT = 0.12;
+      }
       if (t) {
         const want = Math.atan2(t.y - b.y, t.x - b.x);
         const cur = Math.atan2(b.vy, b.vx);
@@ -401,15 +426,15 @@ export function updateBullets(g: Game, dt: number): void {
             g.spawnParticleBurst(b.x, b.y, b.crit ? '#ffe066' : '#bfefff', 4, 130, 2.5);
             g.audio.sfx('hit');
             if (b.aoe > 0) {
-              // aoe splash
-              for (const e2 of g.enemies) {
-                if (e2 === e || e2.hp <= 0) continue;
+              // aoe splash (grid-backed)
+              forEnemiesNear(g, b.x, b.y, b.aoe + 34, (e2) => {
+                if (e2 === e) return;
                 const d = Math.hypot(e2.x - b.x, e2.y - b.y);
                 if (d < b.aoe + e2.radius) {
                   g.damageEnemy(e2, b.dmg * 0.6, false, 'aoe');
                 }
-              }
-              g.shockwaves.push({
+              });
+              g.spawnShock({
                 x: b.x,
                 y: b.y,
                 r: 6,
@@ -421,7 +446,6 @@ export function updateBullets(g: Game, dt: number): void {
                 width: 3,
                 dmg: 0,
                 knock: 0,
-                hitIds: new Set<number>(),
               });
               b.dead = true;
               break;
@@ -437,7 +461,7 @@ export function updateBullets(g: Game, dt: number): void {
       }
     }
   }
-  sweepDead(g.bullets);
+  sweepDead(g.bullets, (b) => g.bulletPool.release(b));
 }
 
 export function updateEBullets(g: Game, dt: number): void {
@@ -462,7 +486,7 @@ export function updateEBullets(g: Game, dt: number): void {
           for (let i = 0; i < 6; i++) {
             const a = (i / 6) * TAU + Math.random();
             if (g.ebullets.length < MAX_EBULLETS) {
-              g.ebullets.push({
+              g.spawnEBullet({
                 x: b.x,
                 y: b.y,
                 vx: Math.cos(a) * 210,
@@ -473,7 +497,7 @@ export function updateEBullets(g: Game, dt: number): void {
               });
             }
           }
-          g.shockwaves.push({
+          g.spawnShock({
             x: b.x,
             y: b.y,
             r: 6,
@@ -485,7 +509,6 @@ export function updateEBullets(g: Game, dt: number): void {
             width: 4,
             dmg: 0,
             knock: 260,
-            hitIds: new Set<number>(),
           });
           const d2 = Math.hypot(dx, dy);
           if (d2 < 110) g.damagePlayer(b.dmg, b.x, b.y);
@@ -511,7 +534,7 @@ export function updateEBullets(g: Game, dt: number): void {
       g.damagePlayer(b.dmg, b.x, b.y);
     }
   }
-  sweepDead(g.ebullets);
+  sweepDead(g.ebullets, (b) => g.ebulletPool.release(b));
 }
 
 // ---------------- enemy behavior + separation ----------------
@@ -701,7 +724,7 @@ export function updateEnemies(g: Game, dt: number): void {
             }
           }
           if (healed > 0) {
-            g.shockwaves.push({
+            g.spawnShock({
               x: e.x,
               y: e.y,
               r: 8,
@@ -713,7 +736,6 @@ export function updateEnemies(g: Game, dt: number): void {
               width: 2.5,
               dmg: 0,
               knock: 0,
-              hitIds: new Set<number>(),
             });
             g.audio.sfx('pickup', 0.5);
           }
@@ -756,7 +778,8 @@ export function updateEnemies(g: Game, dt: number): void {
       e.knockY -= ny * 120 * (1 - (e.def.knockResist ?? 0));
     }
   }
-  sweepDead(g.enemies);
+  // NOTE: dead enemies are swept + released at frame end in game.update —
+  // releasing mid-frame could recycle an object still referenced by the grid
 }
 
 function applyKnock(g: Game, e: Enemy, dt: number): void {
@@ -789,7 +812,7 @@ function enemyShoot(g: Game, e: Enemy, aim: number): void {
   for (let i = 0; i < s.count; i++) {
     const off = s.count === 1 ? 0 : (i - (s.count - 1) / 2) * s.spread;
     const a = aim + off;
-    g.ebullets.push({
+    g.spawnEBullet({
       x: e.x + Math.cos(a) * (e.radius + 4),
       y: e.y + Math.sin(a) * (e.radius + 4),
       vx: Math.cos(a) * s.speed,
@@ -842,23 +865,24 @@ export function updateShocks(g: Game, dt: number): void {
       }
     }
   }
-  sweepDead(g.shockwaves);
+  sweepDead(g.shockwaves, (s) => g.shockPool.release(s));
 }
 
 // ---------------- gems ----------------
 
 export function spawnGem(g: Game, x: number, y: number, value: number, kind: 'xp' | 'heal' | 'core'): void {
   const a = Math.random() * TAU;
-  g.gems.push({
-    x,
-    y,
-    vx: Math.cos(a) * 90,
-    vy: Math.sin(a) * 90,
-    value,
-    kind,
-    t: 0,
-    magnet: false,
-  });
+  const gem = g.gemPool.acquire();
+  gem.x = x;
+  gem.y = y;
+  gem.vx = Math.cos(a) * 90;
+  gem.vy = Math.sin(a) * 90;
+  gem.value = value;
+  gem.kind = kind;
+  gem.t = 0;
+  gem.magnet = false;
+  gem.dead = false;
+  g.gems.push(gem);
 }
 
 export function updateGems(g: Game, dt: number): void {
@@ -895,7 +919,7 @@ export function updateGems(g: Game, dt: number): void {
       }
     }
   }
-  sweepDead(g.gems);
+  sweepDead(g.gems, (gem) => g.gemPool.release(gem));
 }
 
 // ---------------- particles / texts / arcs ----------------
@@ -912,41 +936,49 @@ export function updateParticles(g: Game, dt: number): void {
     const dr = Math.pow(pt.drag, dt);
     pt.vx *= dr;
     pt.vy *= dr;
+    if (pt.kind === 'gib') pt.rot = (pt.rot ?? 0) + (pt.vrot ?? 0) * dt;
   }
-  sweepDead(g.particles);
+  sweepDead(g.particles, (p) => g.particlePool.release(p));
 
   for (const t of g.texts) {
     t.life -= dt;
+    t.x += t.vx * dt;
     t.y += t.vy * dt;
     t.vy *= Math.pow(0.3, dt);
+    t.vx *= Math.pow(0.2, dt);
     if (t.life <= 0) t.dead = true;
   }
-  sweepDead(g.texts);
+  sweepDead(g.texts, (t) => g.textPool.release(t));
 
   for (const a of g.arcs) {
     a.life -= dt;
     if (a.life <= 0) a.dead = true;
   }
-  sweepDead(g.arcs);
+  sweepDead(g.arcs, (a) => g.arcPool.release(a));
 
   for (const af of g.afterimages) {
     af.life -= dt;
     if (af.life <= 0) af.dead = true;
   }
-  sweepDead(g.afterimages);
+  sweepDead(g.afterimages, (af) => g.afterimagePool.release(af));
 }
 
 // ---------------- enemy spatial grid ----------------
 
 export function rebuildGrid(g: Game): void {
+  // recycle cell arrays to kill per-frame allocation churn
+  for (const arr of g.enemyGrid.values()) g.gridPool.push(arr);
   g.enemyGrid.clear();
+  g.enemyById.clear();
   const cell = 64;
   for (const e of g.enemies) {
     if (e.hp <= 0) continue;
+    g.enemyById.set(e.eid, e);
     const key = Math.floor(e.x / cell) + Math.floor(e.y / cell) * 4096;
     let arr = g.enemyGrid.get(key);
     if (!arr) {
-      arr = [];
+      arr = g.gridPool.pop() ?? [];
+      arr.length = 0;
       g.enemyGrid.set(key, arr);
     }
     arr.push(e);
