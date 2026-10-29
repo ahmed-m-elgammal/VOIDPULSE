@@ -166,6 +166,7 @@ export function applyCard(g: Game, card: CardOption): void {
         const evo = EVO_MAP[card.refId];
         if (evo) {
           p.weapons[idx] = { id: evo.into, level: 1, timer: 0.3, angle: p.weapons[idx].angle, t: 0 };
+          g.runEvolutions++; // feeds the TRANSCENDENT achievement chain
           g.flashScreen(WEAPONS[evo.into].color, 0.5);
           g.addText(p.x, p.y - 50, `${WEAPONS[evo.into].name}`, WEAPONS[evo.into].color, 20, true);
           g.shake(5);

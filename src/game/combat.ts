@@ -414,8 +414,8 @@ export function updateBullets(g: Game, dt: number): void {
           const dx = e.x - b.x;
           const dy = e.y - b.y;
           if (dx * dx + dy * dy <= rr * rr) {
-            // shield mod: blocks first hits
-            if (e.mod === 'shield' && e.shieldHits > 0 && b.kind !== 'lance') {
+            // shield affix: blocks the first projectile hits
+            if (e.mods.includes('shield') && e.shieldHits > 0 && b.kind !== 'lance') {
               e.shieldHits--;
               g.spawnParticleBurst(b.x, b.y, '#9adcff', 4, 120, 2.5);
               b.dead = true;
@@ -592,6 +592,46 @@ export function updateEnemies(g: Game, dt: number): void {
     const nx = dx / d;
     const ny = dy / d;
     const spd = e.speed * (1 - e.slow) * e.rage;
+
+    // ---- v1.2 elite affix behaviors (per-frame) ----
+    if (e.elite && e.mods.length > 0) {
+      // VAMPIRIC: pulses regeneration into nearby allies
+      if (e.mods.includes('vampiric')) {
+        e.healT -= dt;
+        if (e.healT <= 0) {
+          e.healT = 2.2;
+          let healed = 0;
+          for (const ally of g.enemies) {
+            if (ally === e || ally.dead || ally.hp <= 0 || ally.spawnT > 0) continue;
+            if (ally.def.behavior === 'boss') continue;
+            if (Math.hypot(ally.x - e.x, ally.y - e.y) < 220 && ally.hp < ally.maxHp) {
+              ally.hp = Math.min(ally.maxHp, ally.hp + ally.maxHp * 0.04);
+              healed++;
+              if (healed <= 3) g.spawnParticle(ally.x, ally.y - ally.radius, 0, -40, 0.5, 2.5, '#ff4d7e');
+            }
+          }
+          if (healed > 0) {
+            g.spawnShock({
+              x: e.x,
+              y: e.y,
+              r: 8,
+              maxR: 220,
+              speed: 480,
+              life: 0.3,
+              maxLife: 0.3,
+              color: '#ff4d7e',
+              width: 2,
+              dmg: 0,
+              knock: 0,
+            });
+          }
+        }
+      }
+      // FROST AURA: chills the player while inside its radius
+      if (e.mods.includes('frostAura') && d < 155) {
+        g.playerChillT = 0.15; // refreshed every frame; updatePlayer reads it
+      }
+    }
 
     switch (e.def.behavior) {
       case 'chase':

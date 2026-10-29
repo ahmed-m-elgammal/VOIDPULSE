@@ -15,6 +15,7 @@ export class AudioEngine {
   private bpm = 128;
   private intensity = 0.35; // 0 menu .. 1 overdrive
   private targetIntensity = 0.35;
+  private bossMode = false; // v1.2: adds the low boss drone to the mix
   muted = false;
   private noiseBuf: AudioBuffer | null = null;
   // volume settings (0..1), applied to buses when ctx exists
@@ -87,6 +88,11 @@ export class AudioEngine {
 
   setIntensity(v: number): void {
     this.targetIntensity = Math.max(0, Math.min(1, v));
+  }
+
+  /** v1.2 stems — toggles the ominous boss layer (low fifth drone, slight tempo push). */
+  setBoss(on: boolean): void {
+    this.bossMode = on;
   }
 
   dispose(): void {
@@ -292,6 +298,19 @@ export class AudioEngine {
         this.tone({ type: 'sine', f0: 1200, f1: 300, dur: 0.3, vol: 0.14 });
         this.noise({ dur: 0.2, vol: 0.06, f0: 3000, f1: 600, q: 2 });
         break;
+      case 'combo1':
+        this.tone({ type: 'square', f0: 700, f1: 1050, dur: 0.09, vol: 0.08 });
+        break;
+      case 'combo2':
+        this.tone({ type: 'square', f0: 620, f1: 930, dur: 0.1, vol: 0.09 });
+        this.tone({ type: 'square', f0: 930, f1: 1400, dur: 0.12, vol: 0.08, delay: 0.08 });
+        break;
+      case 'combo3':
+        [660, 880, 1320].forEach((f, i) =>
+          this.tone({ type: 'sawtooth', f0: f, f1: f * 1.22, dur: 0.14, vol: 0.09, delay: i * 0.06 })
+        );
+        this.noise({ dur: 0.2, vol: 0.05, f0: 3000, f1: 1200, q: 2 });
+        break;
       case 'error':
         this.tone({ type: 'square', f0: 220, f1: 160, dur: 0.16, vol: 0.07 });
         break;
@@ -311,7 +330,8 @@ export class AudioEngine {
       const f = 500 + this.intensity * 4200;
       this.musicFilter.frequency.setTargetAtTime(f, ctx.currentTime, 0.1);
     }
-    const stepDur = 60 / this.bpm / 4;
+    const effBpm = this.bpm * (this.bossMode ? 1.07 : 1); // the dark rides in faster
+    const stepDur = 60 / effBpm / 4;
     while (this.nextStepTime < ctx.currentTime + 0.12) {
       this.scheduleStep(this.step, this.nextStepTime, stepDur);
       this.step = (this.step + 1) % 64;
@@ -379,6 +399,11 @@ export class AudioEngine {
         const f = semi(chord[i] + 12);
         this.mNote(f, t, sd * 15, 0.045 + I * 0.02, 'sawtooth', bus, -8);
         this.mNote(f, t, sd * 15, 0.04 + I * 0.02, 'sawtooth', bus, 8);
+      }
+      // BOSS STEM — low fifth drone under the pad while a titan is alive
+      if (this.bossMode) {
+        this.mNote(root / 2, t, sd * 15, 0.07, 'sawtooth', bus, -5);
+        this.mNote((root * 2) / 3, t, sd * 15, 0.05, 'sawtooth', bus, 5);
       }
     }
     // BASS (intensity > 0.2) — driving 8ths

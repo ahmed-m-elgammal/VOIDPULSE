@@ -208,7 +208,7 @@ Palette + hazard swap (crushing pistons, pull-rifts, healing geysers) on the exi
 
 **Recommended v1.1 slice** (one focused iteration): sprite pre-bake + spatial hash + pooling → hit-stop tiers + gibs + shockwaves + damage tiers + chain-pitch → settings menu + colorblind palettes → boss intros + enrage. That single version makes the game *feel* like a 10× budget title before adding a single new enemy.
 
-**Recommended v1.2 slice**: elite affixes + mutations + dailies + achievements + combo meter + music stems.
+**Recommended v1.2 slice**: elite affixes + mutations + dailies + achievements + combo meter + music stems. ✅ **SHIPPED in v1.2.0** (8 elite affixes with pip visuals, VOID DIAL with 4 mutations + MUTANT ×1.5 BP bonus, DAILY BREACH date-seeded runs with 60◇ first-clear, 25 achievements in 4 tiers with toast payouts, RAMPAGE/VOIDSTORM/ASCENDANT combo meter with core payout, boss drone music stem + combo/elite intensity bumps).
 **Recommended v1.3 slice**: new weapons/companions/relics + VOIDPASS S2 + ascension.
 
 ---

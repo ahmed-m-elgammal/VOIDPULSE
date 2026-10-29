@@ -4,12 +4,17 @@
 import type { LifeStats, MetaSave, Settings } from './types';
 import { META_PERKS } from './content';
 import { CONTRACT_POOL } from './economy';
+import { mutationIds } from './mutations';
 
 const KEY = 'voidpulse_save_v2';
 const KEY_V1 = 'voidpulse_save_v1';
 
 export function defaultLife(): LifeStats {
-  return { kills: 0, elites: 0, bosses: 0, dashKills: 0, overdrive: 0, coresEarned: 0, heals: 0 };
+  return { kills: 0, elites: 0, bosses: 0, dashKills: 0, overdrive: 0, coresEarned: 0, heals: 0, evolutions: 0 };
+}
+
+export function defaultDaily() {
+  return { date: '', bestScore: 0, bestWave: 0, completed: false };
 }
 
 export function defaultSettings(): Settings {
@@ -53,6 +58,9 @@ export function defaultMeta(): MetaSave {
     contractsCleared: 0,
     life: defaultLife(),
     bpXpTotal: 0,
+    mutations: [],
+    daily: defaultDaily(),
+    achievements: {},
     settings: defaultSettings(),
   };
 }
@@ -104,6 +112,11 @@ export function loadMeta(): MetaSave {
     meta.contractProgress = { ...(parsed.contractProgress ?? {}) };
     meta.life = { ...defaultLife(), ...(parsed.life ?? {}) };
     meta.settings = { ...defaultSettings(), ...(parsed.settings ?? {}) };
+    // v1.2 fields
+    const mutIds = new Set(mutationIds());
+    meta.mutations = [...new Set((parsed.mutations ?? []).filter((id) => mutIds.has(id)))];
+    meta.daily = { ...defaultDaily(), ...(parsed.daily ?? {}) };
+    meta.achievements = { ...(parsed.achievements ?? {}) };
     // sanitize settings
     meta.settings.shake = Math.max(0, Math.min(1, meta.settings.shake));
     meta.settings.volMaster = Math.max(0, Math.min(1, meta.settings.volMaster));

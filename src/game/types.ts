@@ -7,6 +7,8 @@ export type GameState =
   | 'pass'
   | 'market'
   | 'settings'
+  | 'dial'
+  | 'achievements'
   | 'playing'
   | 'levelup'
   | 'paused'
@@ -174,7 +176,16 @@ export type EnemyBehavior =
   | 'phase'
   | 'boss';
 
-export type EliteMod = 'burst' | 'swift' | 'shield';
+/** Elite affixes — v1.2 pool. Elites roll 1–2 of these; each colors a pip on the hull. */
+export type EliteMod =
+  | 'burst' // radial bullet burst on death
+  | 'swift' // +45% move speed
+  | 'shield' // blocks the first 3 projectile hits
+  | 'thorns' // reflects a slice of dash/contact damage back
+  | 'vampiric' // pulses regeneration into nearby allies
+  | 'frostAura' // chills the player inside its radius
+  | 'explosive' // telegraphed detonation on death
+  | 'mirror'; // reflects a slice of bullet damage back at the shooter
 
 export interface EnemyShoot {
   cd: number;
@@ -235,7 +246,7 @@ export interface Enemy {
   xp: number;
   score: number;
   elite: boolean;
-  mod: EliteMod | null;
+  mods: EliteMod[];
   flash: number;
   t: number;
   shootTimer: number;
@@ -482,6 +493,14 @@ export interface LifeStats {
   overdrive: number;
   coresEarned: number;
   heals: number;
+  evolutions: number;
+}
+
+export interface DailyRecord {
+  date: string; // local YYYY-MM-DD this record belongs to
+  bestScore: number;
+  bestWave: number;
+  completed: boolean; // finished at least one daily run today
 }
 
 export interface MetaSave {
@@ -517,6 +536,12 @@ export interface MetaSave {
   life: LifeStats;
   // BP lifetime
   bpXpTotal: number;
+  // v1.2 — VOID DIAL (persisted pre-run mutation toggles)
+  mutations: string[];
+  // v1.2 — daily breach record (resets by date)
+  daily: DailyRecord;
+  // v1.2 — unlocked achievements (id -> unlock epoch ms)
+  achievements: Record<string, number>;
   // accessibility & audio settings
   settings: Settings;
 }

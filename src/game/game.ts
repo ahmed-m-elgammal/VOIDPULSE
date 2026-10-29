@@ -10,6 +10,7 @@ import type {
   Enemy,
   EnemyDef,
   EBullet,
+  EliteMod,
   FloatText,
   GameState,
   Gem,
@@ -18,6 +19,7 @@ import type {
   Player,
   Settings,
   Shock,
+  Stats,
 } from './types';
 import {
   ENEMIES as ENEMY_DEFS,
@@ -64,6 +66,9 @@ import {
   type RunStats,
 } from './economy';
 import { skinOf } from './skins';
+import { MUTATIONS, MUTANT_BONUS_MULT, isMutation, SWARM_SCORE_MULT } from './mutations';
+import { evaluateAchievements, ACHIEVEMENTS, type AchievementUnlock } from './achievements';
+import { DAILY_COMPLETION_PRISMS, dailyMutationsFor, dailySeedFor, todayKey } from './daily';
 
 interface DelayedCall {
   t: number;
@@ -132,7 +137,7 @@ export class Game {
   }));
   enemyPool = new Pool<Enemy>(() => ({
     eid: 0, def: null as unknown as EnemyDef, x: 0, y: 0, vx: 0, vy: 0, hp: 1, maxHp: 1, radius: 10, speed: 60,
-    damage: 5, xp: 1, score: 1, elite: false, mod: null, flash: 0, t: 0, shootTimer: 999, phase: 0, slow: 0, slowT: 0,
+    damage: 5, xp: 1, score: 1, elite: false, mods: [] as EliteMod[], flash: 0, t: 0, shootTimer: 999, phase: 0, slow: 0, slowT: 0,
     freezeT: 0, stunT: 0, knockX: 0, knockY: 0, spawnT: 0, orbHitCd: 0, zigPhase: 0, rage: 1, shieldHits: 0,
     hitCd: new Map<number, number>(), fuseT: -1, ghostT: 0, phaseT: 0, healT: 1.2, dead: false,
   }));
@@ -140,12 +145,30 @@ export class Game {
 
   // JUICE state — v1.1
   killChainT = 0; // seconds left in the current kill chain
-  killChainN = 0; // kills in the chain (drives pitch escalation)
   slowT = 0; // dash-exit micro slow-mo
   levelupFreeze = 0; // freeze frame before card draft opens
   pendingCards = false; // cards ready, waiting on freeze frame
   zoomKick = 0; // boss-kill camera punch-in
   cardAnimT = 0; // card slide-in animation clock
+
+  // v1.2 — COMBO METER
+  combo = 0; // kills in the current chain (2s window)
+  runMaxCombo = 0; // best chain this run (drives the core payout bonus)
+  comboTierShown = 0; // highest banner tier fired in this chain
+  comboBanner: { tier: number; t: number } | null = null;
+
+  // v1.2 — elite affix tracking + affix-driven player states
+  elitesAlive = 0;
+  playerChillT = 0; // frostAura chill remaining (refreshed while inside)
+
+  // v1.2 — run configuration (VOID DIAL mutations / daily breach)
+  runMutations: string[] = [];
+  scoreMult = 1;
+  dailyMode = false;
+  lastRunDaily = false; // retry keeps entering the same mode
+  dailyPrismReward = 0; // one-time completion prism for the run-end ceremony
+  runEvolutions = 0;
+  newAchievements: AchievementUnlock[] = [];
 
   camera = { x: WORLD_W / 2, y: WORLD_H / 2 };
   trauma = 0;
@@ -173,6 +196,7 @@ export class Game {
   pendingBoss: { idx: number; hpMult: number } | null = null;
   rageT = 0;
   dmgScale = 1;
+  maxEnemies = MAX_ENEMIES; // SWARM PROTOCOL raises this for the run
 
   // meta
   meta: {
@@ -296,7 +320,9 @@ export class Game {
       passives
     );
     if (this.activeBoosters['xpAmp']) stats.xpMult *= 1.3;
-    const maxHp = PLAYER_BASE.hp + perkTiers('guardCore') * 15;
+    this.applyMutationStats(stats);
+    let maxHp = PLAYER_BASE.hp + perkTiers('guardCore') * 15;
+    if (this.runMutations.includes('glassHull')) maxHp = Math.round(maxHp * 0.6);
     this.player = {
       shield: this.activeBoosters['shieldCache'] ? 1 : 0,
       x: this.worldW / 2,
@@ -334,7 +360,12 @@ export class Game {
 
   // ---------------- run lifecycle ----------------
 
-  startRun(): void {
+  /** Glass Hull damage bonus — shared by resetPlayer + recomputeStats. */
+  private applyMutationStats(stats: Stats): void {
+    if (this.runMutations.includes('glassHull')) stats.damageMult *= 1.4;
+  }
+
+  startRun(opts?: { daily?: boolean }): void {
     // consume boosters (one of each owned type fires this run)
     this.activeBoosters = {};
     let consumed = 0;
@@ -347,6 +378,23 @@ export class Game {
       }
     }
     if (consumed > 0) this.meta.save();
+    // ---- v1.2 run configuration ----
+    this.lastRunDaily = opts?.daily === true;
+    this.dailyMode = this.lastRunDaily;
+    this.dailyPrismReward = 0;
+    if (this.dailyMode) {
+      const key = todayKey();
+      const seed = dailySeedFor(key);
+      this.runMutations = dailyMutationsFor(seed);
+      this.rng = makeRng(seed); // date-seeded: elite affix rolls repeat across the day
+    } else {
+      this.runMutations = [...new Set(this.meta.data.mutations.filter((id) => isMutation(id)))];
+      this.rng = makeRng((Date.now() ^ 0x5f3759df) >>> 0);
+    }
+    this.scoreMult = this.runMutations.includes('swarmProtocol') ? SWARM_SCORE_MULT : 1;
+    this.maxEnemies = this.runMutations.includes('swarmProtocol') ? MAX_ENEMIES + 40 : MAX_ENEMIES;
+    this.runEvolutions = 0;
+    this.newAchievements = [];
     this.resetPlayer();
     this.enemies.length = 0;
     this.bullets.length = 0;
@@ -375,7 +423,12 @@ export class Game {
     this.pendingLevels = 0;
     this.cards = [];
     this.killChainT = 0;
-    this.killChainN = 0;
+    this.combo = 0;
+    this.runMaxCombo = 0;
+    this.comboTierShown = 0;
+    this.comboBanner = null;
+    this.elitesAlive = 0;
+    this.playerChillT = 0;
     this.slowT = 0;
     this.levelupFreeze = 0;
     this.pendingCards = false;
@@ -394,6 +447,7 @@ export class Game {
     this.hintsShown.clear();
     this.hintIndex = 0;
     this.hintT = 0;
+    this.input.dash = false; // stale title-screen taps shouldn't burn a dash
     this.state = 'playing';
     this.audio.setIntensity(0.45);
     startWave(this, 1);
@@ -404,6 +458,7 @@ export class Game {
     this.state = 'title';
     this.menuIndex = 0;
     this.audio.setIntensity(0.3);
+    this.audio.setBoss(false);
   }
 
   onPlayerDeath(): void {
@@ -416,6 +471,7 @@ export class Game {
     this.spawnParticleBurst(this.player.x, this.player.y, '#4de8ff', 40, 320, 4, 0.96);
     this.spawnParticleBurst(this.player.x, this.player.y, '#ffffff', 20, 220, 3, 0.94);
     this.audio.setIntensity(0.2);
+    this.audio.setBoss(false);
   }
 
   triggerVictory(): void {
@@ -424,6 +480,7 @@ export class Game {
     this.state = 'victory';
     this.audio.sfx('victory');
     this.audio.setIntensity(0.5);
+    this.audio.setBoss(false);
     this.finalizeRun(true);
   }
 
@@ -438,9 +495,13 @@ export class Game {
   private finalizeRun(won: boolean): void {
     const m = this.meta.data;
     m.runs++;
-    // ---- cores ----
+    // ---- cores (mutation + combo multipliers stack) ----
     const baseCores = Math.floor(this.score / 1000) + this.wave * 3 + this.bossKills * 30;
     this.coresEarned = Math.round(baseCores * (this.activeBoosters['coreAmp'] ? 1.35 : 1));
+    if (this.runMutations.includes('ironMan')) this.coresEarned *= 2; // IRON MAN
+    // combo payout: +1% cores per 10 best chain, capped +25%
+    const comboBonus = Math.min(0.25, Math.floor(this.runMaxCombo / 10) * 0.01);
+    this.coresEarned = Math.round(this.coresEarned * (1 + comboBonus));
     const run: RunStats = {
       wave: this.wave,
       kills: this.kills,
@@ -454,7 +515,7 @@ export class Game {
       won,
     };
     m.cores += this.coresEarned;
-    // ---- lifetime stats (feeds contracts) ----
+    // ---- lifetime stats (feeds contracts + achievements) ----
     m.life.kills += this.kills;
     m.life.elites += this.runElites;
     m.life.bosses += this.bossKills;
@@ -462,20 +523,36 @@ export class Game {
     m.life.overdrive += this.runOverdrive;
     m.life.coresEarned += this.coresEarned;
     m.life.heals += this.runHeals;
+    m.life.evolutions += this.runEvolutions;
     m.bestScore = Math.max(m.bestScore, Math.floor(this.score));
     m.bestWave = Math.max(m.bestWave, this.wave);
     if (won) {
       m.wins++;
       m.endlessUnlocked = true;
     }
+    // ---- daily breach record ----
+    if (this.dailyMode) {
+      const key = todayKey();
+      if (m.daily.date !== key) m.daily = { date: key, bestScore: 0, bestWave: 0, completed: false };
+      m.daily.bestScore = Math.max(m.daily.bestScore, Math.floor(this.score));
+      m.daily.bestWave = Math.max(m.daily.bestWave, this.wave);
+      if (!m.daily.completed) {
+        m.daily.completed = true;
+        m.prisms += DAILY_COMPLETION_PRISMS;
+        this.dailyPrismReward = DAILY_COMPLETION_PRISMS;
+      }
+    }
     // ---- contracts (may add bp xp) ----
     this.contractResults = settleContracts(m, run);
-    // ---- battle pass ----
-    const rawBp = computeRunBpXp(run) * (this.activeBoosters['bpAmp'] ? 1.4 : 1);
+    // ---- battle pass (MUTANT bonus at 3+ mutations) ----
+    const mutant = this.runMutations.length >= 3;
+    const rawBp = computeRunBpXp(run) * (this.activeBoosters['bpAmp'] ? 1.4 : 1) * (mutant ? MUTANT_BONUS_MULT : 1);
     this.bpXpGained = Math.round(rawBp) + this.contractResults.reduce((a, c) => a + c.bpXp, 0);
     const grant = applyBpXp(m, this.bpXpGained);
     this.bpLevelsGained = grant.levelsGained;
     this.bpRewards = grant.rewards;
+    // ---- achievements (evaluated last — sees every stat above) ----
+    this.newAchievements = evaluateAchievements(m);
     this.meta.save();
   }
 
@@ -530,11 +607,19 @@ export class Game {
       dt = realDt * 0.5;
     }
 
-    // kill-chain window runs on real time
+    // kill-chain / combo window runs on real time
     if (this.killChainT > 0) {
       this.killChainT -= realDt;
-      if (this.killChainT <= 0) this.killChainN = 0;
+      if (this.killChainT <= 0) {
+        this.combo = 0;
+        this.comboTierShown = 0;
+      }
     }
+    if (this.comboBanner) {
+      this.comboBanner.t -= realDt;
+      if (this.comboBanner.t <= 0) this.comboBanner = null;
+    }
+    this.playerChillT = Math.max(0, this.playerChillT - realDt);
 
     this.zoomKick = Math.max(0, this.zoomKick - realDt * 2.2);
 
@@ -578,7 +663,10 @@ export class Game {
         : this.bossActive
           ? 0.85
           : 0.4 + Math.min(0.25, this.wave * 0.016) + Math.min(0.1, this.player.heat / 1000);
-    this.audio.setIntensity(target);
+    // v1.2 stems: elites on the field and long chains push the mix hotter
+    const eliteBump = Math.min(0.06, this.elitesAlive * 0.02);
+    const comboBump = this.combo >= 25 ? 0.09 : this.combo >= 10 ? 0.05 : 0;
+    this.audio.setIntensity(Math.min(1, target + eliteBump + comboBump));
 
     // contextual hints (first run onboarding)
     this.updateHints(dt);
@@ -629,6 +717,11 @@ export class Game {
     spawnGemFn(this, x, y, value, kind);
   }
 
+  /** schedule a callback on the world clock (survives hit-stop, respects slow-mo) */
+  delay(t: number, fn: () => void): void {
+    this.delayed.push({ t, fn });
+  }
+
   spawnEnemy(typeId: string, x: number, y: number, elite: boolean): Enemy | null {
     if (this.enemies.length >= MAX_ENEMIES) return null;
     const base = ENEMY_DEFS[typeId];
@@ -638,7 +731,9 @@ export class Game {
     const dmgScale = WAVE_CONFIG.dmgScale(wave);
     const spdScale = WAVE_CONFIG.spdScale(wave);
     const eliteMult = elite ? 6 : 1;
-    const mod = elite ? pickMod(this.rng) : null;
+    const mods = elite ? rollEliteMods(this.rng, wave) : [];
+    const affixMult = elite ? 1 + 0.35 * (mods.length - 1) : 1; // richer affixes pay better
+    const swift = mods.includes('swift');
     const hp = base.hp * hpScale * eliteMult;
     const e = this.enemyPool.acquire();
     e.eid = this.nextEid();
@@ -650,12 +745,17 @@ export class Game {
     e.hp = hp;
     e.maxHp = hp;
     e.radius = base.radius * (elite ? 1.55 : 1);
-    e.speed = base.speed * spdScale * (mod === 'swift' ? 1.45 : 1);
+    e.speed =
+      base.speed *
+      spdScale *
+      (swift ? 1.45 : 1) *
+      (this.runMutations.includes('cursedCores') ? 1.3 : 1); // CURSED CORES
     e.damage = base.damage * dmgScale * (elite ? 1.4 : 1);
-    e.xp = base.xp * (elite ? 6 : 1);
-    e.score = base.score * (elite ? 8 : 1);
+    e.xp = base.xp * (elite ? 6 * affixMult : 1);
+    e.score = base.score * (elite ? 8 * affixMult : 1);
     e.elite = elite;
-    e.mod = mod;
+    e.mods.length = 0;
+    if (mods.length) e.mods.push(...mods);
     e.flash = 0;
     e.t = 0;
     e.shootTimer = base.shoot ? base.shoot.cd * (0.5 + Math.random()) : 999;
@@ -670,7 +770,7 @@ export class Game {
     e.orbHitCd = 0;
     e.zigPhase = Math.random() * Math.PI * 2;
     e.rage = 1;
-    e.shieldHits = mod === 'shield' ? 3 : 0;
+    e.shieldHits = mods.includes('shield') ? 3 : 0;
     e.hitCd.clear();
     e.fuseT = -1;
     e.ghostT = 0;
@@ -679,6 +779,7 @@ export class Game {
     e.dead = false;
     this.enemies.push(e);
     if (elite) {
+      this.elitesAlive++;
       this.spawnParticleBurst(x, y, '#ff9a3d', 12, 160, 3);
     }
     return e;
@@ -714,6 +815,17 @@ export class Game {
       }
       if (crit) this.hitStop = Math.max(this.hitStop, 0.04); // micro-freeze on crits
     }
+    // MIRROR affix: elite reflects a slice of direct bullet damage back at the shooter
+    if (!silent && source === 'bullet' && e.mods.includes('mirror')) {
+      const ref = Math.min(9, dmg * 0.12);
+      if (ref >= 1) {
+        this.damagePlayer(ref, e.x, e.y);
+        const dx = this.player.x - e.x;
+        const dy = this.player.y - e.y;
+        const d = Math.hypot(dx, dy) || 1;
+        this.spawnParticle(e.x, e.y, (dx / d) * 260, (dy / d) * 260, 0.18, 2.6, '#b7a4ff', 0.94);
+      }
+    }
     if (e.hp <= 0) {
       const overkill = dmg - hpBefore;
       if (overkill > e.maxHp * 0.4 && this.texts.length < MAX_TEXTS && this.settings.dmgNumbers) {
@@ -731,11 +843,20 @@ export class Game {
     if (e.dead) return;
     e.dead = true;
     this.kills++;
-    // kill chain: consecutive kills within the window raise the kill SFX pitch
-    if (this.killChainT > 0) this.killChainN++;
-    else this.killChainN = 0;
-    this.killChainT = 1.5;
-    const chainRate = Math.pow(2, Math.min(this.killChainN, 7) / 12);
+    if (e.elite) this.elitesAlive--;
+    // combo: consecutive kills inside the 2s window chain up (pitch + banner + payout)
+    if (this.killChainT > 0) this.combo++;
+    else this.combo = 1;
+    this.killChainT = 2.0;
+    if (this.combo > this.runMaxCombo) this.runMaxCombo = this.combo;
+    const chainRate = Math.pow(2, Math.min(Math.max(0, this.combo - 1), 7) / 12);
+    const comboTier = this.combo >= 50 ? 3 : this.combo >= 25 ? 2 : this.combo >= 10 ? 1 : 0;
+    if (comboTier > 0 && comboTier > this.comboTierShown) {
+      this.comboTierShown = comboTier;
+      this.comboBanner = { tier: comboTier, t: 1.4 };
+      this.audio.sfx(comboTier === 3 ? 'combo3' : comboTier === 2 ? 'combo2' : 'combo1');
+      this.flashScreen(['#ffd94d', '#ff9a3d', '#c9b8ff'][comboTier - 1], 0.14);
+    }
     if (source === 'dash' && e.def.minor && !e.elite) this.runDashKills++;
     if (e.elite) this.runElites++;
     // volatile detonation — always explodes, even when shot down
@@ -778,9 +899,9 @@ export class Game {
       this.shake(7);
       this.spawnParticleBurst(e.x, e.y, '#ff8a3d', 26, 320, 4);
     }
-    // score with heat multiplier
+    // score with heat multiplier (+ SWARM PROTOCOL score bonus)
     const p = this.player;
-    const mult = (1 + p.heat / 100) * (p.overdrive > 0 ? 2 : 1);
+    const mult = (1 + p.heat / 100) * (p.overdrive > 0 ? 2 : 1) * this.scoreMult;
     const pts = Math.round(e.score * mult);
     this.score += pts;
     if (e.elite || Math.random() < 0.2) {
@@ -792,7 +913,7 @@ export class Game {
     for (let i = 0; i < gemCount; i++) {
       spawnGemFn(this, e.x + (Math.random() - 0.5) * 18, e.y + (Math.random() - 0.5) * 18, per, 'xp');
     }
-    const healChance = 0.028 + (e.elite ? 0.2 : 0);
+    const healChance = this.runMutations.includes('ironMan') ? 0 : 0.028 + (e.elite ? 0.2 : 0); // IRON MAN: no repairs
     if (Math.random() < healChance) {
       spawnGemFn(this, e.x, e.y, 12, 'heal');
     }
@@ -819,6 +940,46 @@ export class Game {
     this.shake(e.elite ? 4 : 0.6);
     if (e.elite) this.hitStop = Math.max(this.hitStop, 0.09);
 
+    // EXPLOSIVE affix: telegraphed detonation shortly after death
+    if (e.mods.includes('explosive')) {
+      const ex = e.x;
+      const ey = e.y;
+      const scale = this.dmgScale;
+      this.spawnShock({
+        x: ex,
+        y: ey,
+        r: 6,
+        maxR: 130,
+        speed: 150,
+        life: 0.55,
+        maxLife: 0.55,
+        color: '#ff5c5c',
+        width: 2.5,
+        dmg: 0,
+        knock: 0,
+      });
+      this.delay(0.55, () => {
+        const R = 125;
+        const d = Math.hypot(this.player.x - ex, this.player.y - ey);
+        if (d < R + this.player.radius) this.damagePlayer(14 * scale, ex, ey);
+        this.spawnShock({
+          x: ex,
+          y: ey,
+          r: 8,
+          maxR: 170,
+          speed: 640,
+          life: 0.26,
+          maxLife: 0.26,
+          color: '#ff8a3d',
+          width: 5,
+          dmg: 0,
+          knock: 300,
+        });
+        this.spawnParticleBurst(ex, ey, '#ff8a3d', 20, 300, 3.5);
+        this.audio.sfx('explode', 0.25);
+        this.shake(6);
+      });
+    }
     // splitter spawns
     if (e.def.splitsInto) {
       for (let i = 0; i < e.def.splitsInto.count; i++) {
@@ -830,8 +991,8 @@ export class Game {
         }
       }
     }
-    // elite burst mod
-    if (e.mod === 'burst') {
+    // elite burst affix
+    if (e.mods.includes('burst')) {
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * Math.PI * 2;
         if (this.ebullets.length < 320) {
@@ -897,7 +1058,7 @@ export class Game {
 
   gainXp(v: number): void {
     const p = this.player;
-    p.xp += v * p.stats.xpMult;
+    p.xp += v * p.stats.xpMult * (this.runMutations.includes('cursedCores') ? 1.5 : 1); // CURSED CORES
     let leveled = false;
     while (p.xp >= p.xpNext) {
       p.xp -= p.xpNext;
@@ -965,7 +1126,9 @@ export class Game {
       p.passives
     );
     if (this.activeBoosters['xpAmp']) p.stats.xpMult *= 1.3;
-    const newMax = PLAYER_BASE.hp + this.meta.perkTiers('guardCore') * 15 + (p.passives['vitality'] ?? 0) * 20;
+    this.applyMutationStats(p.stats);
+    let newMax = PLAYER_BASE.hp + this.meta.perkTiers('guardCore') * 15 + (p.passives['vitality'] ?? 0) * 20;
+    if (this.runMutations.includes('glassHull')) newMax = Math.round(newMax * 0.6);
     if (newMax !== oldMax) {
       const diff = newMax - oldMax;
       p.maxHp = newMax;
@@ -1234,6 +1397,25 @@ export class Game {
     this.flashAlpha = Math.max(this.flashAlpha, alpha * (this.settings.reduceFlash ? 0.4 : 1));
   }
 
+  // ---------------- v1.2 VOID DIAL / achievements / daily ----------------
+
+  dialIndex = 0;
+  achIndex = 0;
+  achScroll = 0;
+
+  toggleMutation(id: string): void {
+    if (!isMutation(id)) return;
+    const m = this.meta.data;
+    if (m.mutations.includes(id)) {
+      m.mutations = m.mutations.filter((x) => x !== id);
+      this.audio.sfx('uiMove');
+    } else {
+      m.mutations.push(id);
+      this.audio.sfx('select');
+    }
+    this.meta.save();
+  }
+
   // ---------------- ui interaction ----------------
 
   click(x: number, y: number): void {
@@ -1275,6 +1457,10 @@ export class Game {
       this.cycleSetting(id.slice(10), 1);
       return;
     }
+    if (id.startsWith('dial_toggle_')) {
+      this.toggleMutation(id.slice(12));
+      return;
+    }
     if (id.startsWith('skin_buy_')) {
       this.buySkin(id.slice(9));
       return;
@@ -1303,6 +1489,18 @@ export class Game {
     switch (id) {
       case 'title_start':
         this.startRun();
+        break;
+      case 'title_daily':
+        this.startRun({ daily: true });
+        break;
+      case 'title_dial':
+        this.state = 'dial';
+        this.dialIndex = 0;
+        break;
+      case 'title_achievements':
+        this.state = 'achievements';
+        this.achIndex = 0;
+        this.achScroll = 0;
         break;
       case 'title_pass':
         this.state = 'pass';
@@ -1352,6 +1550,14 @@ export class Game {
         this.state = 'title';
         this.menuIndex = 0;
         break;
+      case 'dial_back':
+        this.state = 'title';
+        this.menuIndex = 0;
+        break;
+      case 'ach_back':
+        this.state = 'title';
+        this.menuIndex = 0;
+        break;
       case 'pause_settings':
         this.state = 'settings';
         this.settingsIndex = 0;
@@ -1361,13 +1567,13 @@ export class Game {
         this.togglePause();
         break;
       case 'pause_restart':
-        this.startRun();
+        this.startRun(this.lastRunDaily ? { daily: true } : undefined);
         break;
       case 'pause_quit':
         this.quitToTitle();
         break;
       case 'over_retry':
-        this.startRun();
+        this.startRun(this.lastRunDaily ? { daily: true } : undefined);
         break;
       case 'over_title':
         this.state = 'title';
@@ -1406,7 +1612,17 @@ export class Game {
     switch (this.state) {
       case 'title': {
         if (code === 'Enter' || code === 'NumpadEnter') {
-          const actions = ['title_start', 'title_pass', 'title_market', 'title_perks', 'title_settings', 'title_help'];
+          const actions = [
+            'title_start',
+            'title_daily',
+            'title_dial',
+            'title_pass',
+            'title_market',
+            'title_perks',
+            'title_achievements',
+            'title_settings',
+            'title_help',
+          ];
           this.onButton(actions[this.menuIndex] ?? 'title_start');
         } else if (code === 'KeyB') {
           this.state = 'pass';
@@ -1420,13 +1636,50 @@ export class Game {
           this.state = 'settings';
           this.settingsIndex = 0;
         } else if (code === 'KeyH') this.state = 'help';
-        else if (code === 'ArrowUp' || code === 'KeyW') {
-          this.menuIndex = (this.menuIndex + 5) % 6;
+        else if (code === 'KeyY') this.startRun({ daily: true });
+        else if (code === 'KeyD') {
+          this.state = 'dial';
+          this.dialIndex = 0;
+        } else if (code === 'KeyA') {
+          this.state = 'achievements';
+          this.achIndex = 0;
+          this.achScroll = 0;
+        } else if (code === 'ArrowUp' || code === 'KeyW') {
+          this.menuIndex = (this.menuIndex + 8) % 9;
           this.audio.sfx('uiMove');
         } else if (code === 'ArrowDown' || code === 'KeyS') {
-          this.menuIndex = (this.menuIndex + 1) % 6;
+          this.menuIndex = (this.menuIndex + 1) % 9;
           this.audio.sfx('uiMove');
         } else if (code === 'KeyM') this.toggleMute();
+        break;
+      }
+      case 'dial': {
+        if (code === 'Escape' || code === 'KeyD') {
+          this.state = 'title';
+          this.menuIndex = 0;
+        } else if (code === 'ArrowUp' || code === 'KeyW') {
+          this.dialIndex = (this.dialIndex + MUTATIONS.length - 1) % MUTATIONS.length;
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowDown' || code === 'KeyS') {
+          this.dialIndex = (this.dialIndex + 1) % MUTATIONS.length;
+          this.audio.sfx('uiMove');
+        } else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+          this.toggleMutation(MUTATIONS[this.dialIndex]?.id ?? '');
+        }
+        break;
+      }
+      case 'achievements': {
+        const maxIdx = ACHIEVEMENTS.length - 1;
+        if (code === 'Escape' || code === 'KeyA') {
+          this.state = 'title';
+          this.menuIndex = 0;
+        } else if (code === 'ArrowUp' || code === 'KeyW') {
+          this.achIndex = Math.max(0, this.achIndex - 1);
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowDown' || code === 'KeyS') {
+          this.achIndex = Math.min(maxIdx, this.achIndex + 1);
+          this.audio.sfx('uiMove');
+        }
         break;
       }
       case 'settings': {
@@ -1599,9 +1852,20 @@ export class Game {
   }
 }
 
-function pickMod(rng: () => number): 'burst' | 'swift' | 'shield' {
-  const r = rng();
-  if (r < 0.4) return 'burst';
-  if (r < 0.7) return 'swift';
-  return 'shield';
+/**
+ * v1.2 elite affix roller — every elite gets 1 affix; wave 5+ elites have a
+ * 30% chance of a second (distinct) affix. Heavy affixes unlock at wave 5.
+ * Payout scales with affix count (see spawnEnemy).
+ */
+export function rollEliteMods(rng: () => number, wave: number): EliteMod[] {
+  const light: EliteMod[] = ['burst', 'swift', 'shield'];
+  const heavy: EliteMod[] = ['thorns', 'vampiric', 'frostAura', 'explosive', 'mirror'];
+  const pool = wave >= 5 ? [...light, ...heavy] : light;
+  const first = pool[Math.floor(rng() * pool.length) % pool.length];
+  const mods: EliteMod[] = [first];
+  if (wave >= 5 && rng() < 0.3) {
+    const rest = pool.filter((m) => m !== first);
+    mods.push(rest[Math.floor(rng() * rest.length) % rest.length]);
+  }
+  return mods;
 }

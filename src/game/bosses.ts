@@ -41,7 +41,7 @@ export function createBoss(g: Game, defIndex: number, hpMult: number): Enemy {
     xp: def.xp,
     score: def.score,
     elite: false,
-    mod: null,
+    mods: [],
     flash: 0,
     t: 0,
     shootTimer: 999,

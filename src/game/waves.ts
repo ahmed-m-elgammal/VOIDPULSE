@@ -1,7 +1,7 @@
 // ===== VOIDPULSE :: wave director =====
 
 import type { Game } from './game';
-import { BOSS_WAVES, MAX_ENEMIES, WAVE_CONFIG, spawnPoolForWave, WORLD_H, WORLD_W } from './content';
+import { BOSS_WAVES, WAVE_CONFIG, spawnPoolForWave, WORLD_H, WORLD_W } from './content';
 import { TAU, weightedPick, clamp } from './utils';
 import { createBoss } from './bosses';
 
@@ -13,10 +13,13 @@ export function startWave(g: Game, wave: number): void {
   const isBoss = BOSS_WAVES[wave] !== undefined || (wave > 15 && (wave - 15) % 5 === 0);
   g.waveState = 'intro';
   g.waveTimer = isBoss ? 0 : WAVE_CONFIG.duration(wave);
-  g.spawnBudget = WAVE_CONFIG.budget(wave);
+  // SWARM PROTOCOL: denser waves — bigger budget, shorter gaps, raised cap (see g.maxEnemies)
+  const swarm = g.runMutations.includes('swarmProtocol');
+  g.spawnBudget = Math.ceil(WAVE_CONFIG.budget(wave) * (swarm ? 1.8 : 1));
   g.spawnTimer = isBoss ? 2.5 : 1.2;
-  g.spawnInterval = WAVE_CONFIG.spawnInterval(wave);
+  g.spawnInterval = WAVE_CONFIG.spawnInterval(wave) * (swarm ? 0.65 : 1);
   g.bossActive = isBoss;
+  g.audio.setBoss(isBoss); // v1.2 stems: the boss layer rides the mix
   g.waveIntroT = 2.2;
   g.eliteChance = WAVE_CONFIG.eliteChance(wave);
   g.spawnPool = spawnPoolForWave(wave);
@@ -62,7 +65,7 @@ export function updateWaves(g: Game, dt: number): void {
     // spawning
     if (g.spawnBudget > 0) {
       g.spawnTimer -= dt;
-      if (g.spawnTimer <= 0 && g.enemies.length < MAX_ENEMIES) {
+      if (g.spawnTimer <= 0 && g.enemies.length < g.maxEnemies) {
         g.spawnTimer = g.spawnInterval * (0.75 + Math.random() * 0.5);
         spawnTick(g);
       }
@@ -123,7 +126,7 @@ function clampWorld(v: number, max: number): number {
 function spawnTick(g: Game): void {
   const burst = Math.random() < 0.16 && g.wave >= 2 ? 4 : 1;
   for (let i = 0; i < burst && g.spawnBudget > 0; i++) {
-    if (g.enemies.length >= MAX_ENEMIES) return;
+    if (g.enemies.length >= g.maxEnemies) return;
     const def = weightedPick(g.spawnPool, Math.random);
     const elite = Math.random() < g.eliteChance;
     const a = Math.random() * TAU;
@@ -139,7 +142,7 @@ function spawnTick(g: Game): void {
 
 export function completeWave(g: Game): void {
   g.audio.sfx('waveClear');
-  const waveScore = 250 * g.wave;
+  const waveScore = Math.round(250 * g.wave * g.scoreMult); // SWARM PROTOCOL pays +30% score
   let bonus = 0;
   if (g.waveHits === 0) {
     bonus = 400;
@@ -148,11 +151,13 @@ export function completeWave(g: Game): void {
   g.score += waveScore + bonus;
   g.addText(g.player.x, g.player.y - 40, `WAVE ${g.wave} CLEAR +${waveScore}`, '#4de8ff', 15, true);
 
-  // wave clear heal orb if hurting
-  if (g.player.hp < g.player.maxHp * 0.6) {
-    g.spawnGem(g.player.x + 60, g.player.y, 20, 'heal');
-  } else if (Math.random() < 0.5) {
-    g.spawnGem(g.player.x + (Math.random() - 0.5) * 200, g.player.y + (Math.random() - 0.5) * 200, 10, 'heal');
+  // wave clear heal orb if hurting (IRON MAN: no repairs)
+  if (!g.runMutations.includes('ironMan')) {
+    if (g.player.hp < g.player.maxHp * 0.6) {
+      g.spawnGem(g.player.x + 60, g.player.y, 20, 'heal');
+    } else if (Math.random() < 0.5) {
+      g.spawnGem(g.player.x + (Math.random() - 0.5) * 200, g.player.y + (Math.random() - 0.5) * 200, 10, 'heal');
+    }
   }
 
   // magnet all gems

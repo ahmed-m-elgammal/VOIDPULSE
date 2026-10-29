@@ -19,6 +19,15 @@ import {
   marketSkins,
 } from './economy';
 import { SKINS, skinOf } from './skins';
+import { MUTATIONS, MUTANT_BONUS_MULT } from './mutations';
+import {
+  ACHIEVEMENTS,
+  TIER_COLORS,
+  achievementRewardLabel,
+  achievementValue,
+  unlockedCount,
+} from './achievements';
+import { DAILY_COMPLETION_PRISMS, dailyMutationsFor, dailySeedFor, mutantHint, todayKey } from './daily';
 
 const MONO = `ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace`;
 
@@ -102,6 +111,12 @@ export function drawMenus(r: Renderer, g: Game): void {
     case 'settings':
       drawSettings(r, g);
       break;
+    case 'dial':
+      drawDial(r, g);
+      break;
+    case 'achievements':
+      drawAchievements(r, g);
+      break;
     case 'paused':
       drawPause(r, g);
       break;
@@ -162,39 +177,52 @@ function drawTitle(r: Renderer, g: Game): void {
   // menu
   const items: [string, string, string][] = [
     ['title_start', 'START RUN', 'Enter'],
+    ['title_daily', g.meta.data.daily.date === todayKey() ? 'DAILY BREACH — DONE TODAY' : 'DAILY BREACH', 'Y'],
+    ['title_dial', 'VOID DIAL — MUTATIONS', 'D'],
     ['title_pass', 'VOIDPASS — SEASON 1', 'B'],
     ['title_market', 'BLACK MARKET', 'N'],
     ['title_perks', 'PERMANENT UPGRADES', 'E'],
+    ['title_achievements', `ACHIEVEMENTS — ${unlockedCount(g.meta.data)}/${ACHIEVEMENTS.length}`, 'A'],
     ['title_settings', 'SETTINGS', 'G'],
     ['title_help', 'HOW TO PLAY', 'H'],
   ];
-  const mw = 380;
+  const mw = 400;
   const mx = (W - mw) / 2;
-  // adaptive spacing keeps 6 items clear of the stats footer on short viewports
-  const step = H < 700 ? 44 : 48;
-  let my = Math.min(H * 0.47, H - 40 - items.length * step - 40);
+  // adaptive spacing: fit all items between the logo block and the stats footer
+  const topY = H * 0.36;
+  const bottomY = H - 96;
+  const btnH = H < 800 ? 30 : 36;
+  const step = Math.max(26, Math.min(H < 800 ? 36 : 42, (bottomY - topY - btnH) / (items.length - 1)));
+  let my = Math.max(topY, Math.min(H * 0.46, bottomY - btnH - (items.length - 1) * step));
   for (const [id, label, key] of items) {
     const idx = items.findIndex((i) => i[0] === id);
     const selected = g.menuIndex === idx;
     const accent =
       id === 'title_start'
         ? '#4de8ff'
-        : id === 'title_pass'
-          ? '#c9b8ff'
-          : id === 'title_market'
-            ? '#ffd166'
-            : id === 'title_settings'
-              ? '#aebdd4'
-              : '#9adcff';
-    button(r, g, id, label, mx, my, mw, 40, accent, 14);
+        : id === 'title_daily'
+          ? '#ffd166'
+          : id === 'title_dial'
+            ? '#d96bff'
+            : id === 'title_achievements'
+              ? '#ffe066'
+              : id === 'title_pass'
+                ? '#c9b8ff'
+                : id === 'title_market'
+                  ? '#ffd166'
+                  : id === 'title_settings'
+                    ? '#aebdd4'
+                    : '#9adcff';
+    button(r, g, id, label, mx, my, mw, btnH, accent, 13);
     ctx.font = font(10, 600);
     ctx.textAlign = 'right';
     ctx.fillStyle = selected ? '#ffd94d' : '#5a6a85';
-    ctx.fillText(`[${key}]`, mx + mw + 34, my + 25);
+    ctx.fillText(`[${key}]`, mx + mw + 34, my + btnH / 2 + 4);
     my += step;
   }
 
   // stats footer
+  const dailyDone = m.daily.date === todayKey() && m.daily.completed;
   ctx.textAlign = 'center';
   ctx.font = font(12, 600);
   ctx.fillStyle = '#6dff8c';
@@ -203,12 +231,19 @@ function drawTitle(r: Renderer, g: Game): void {
     W / 2,
     H - 66
   );
+  ctx.font = font(10.5, 600);
+  ctx.fillStyle = dailyDone ? '#6dff8c' : '#5a6a85';
+  ctx.fillText(
+    `DAILY BREACH: ${dailyDone ? `DONE — BEST ${fmtScore(m.daily.bestScore)} (WAVE ${m.daily.bestWave})` : '2 FIXED MUTATIONS AWAIT · 60◇ FIRST CLEAR'}   ·   ${mutantHint().toUpperCase()}`,
+    W / 2,
+    H - 46
+  );
   ctx.font = font(11, 500);
   ctx.fillStyle = '#5a6a85';
-  ctx.fillText('WASD move · SPACE dash · weapons auto-fire · [M] mute', W / 2, H - 44);
+  ctx.fillText('WASD move · SPACE dash · weapons auto-fire · [M] mute', W / 2, H - 28);
   ctx.font = font(10, 500);
   ctx.fillStyle = '#3d4a63';
-  ctx.fillText('VOIDPULSE v1.1.0 — SEASON ONE', W / 2, H - 24);
+  ctx.fillText('VOIDPULSE v1.2.0 — SEASON ONE', W / 2, H - 14);
 }
 
 function drawPerks(r: Renderer, g: Game): void {
@@ -323,6 +358,17 @@ function drawHelp(r: Renderer, g: Game): void {
     ['#ffffff', '  Survive 15 waves and kill the final boss to win — then the void opens: ENDLESS mode.'],
     ['#ffffff', '  Earn CORES every run → buy permanent upgrades between runs.'],
     ['#4de8ff', ''],
+    ['#ffd166', 'COMBO & ACHIEVEMENTS'],
+    ['#ffffff', '  Chain kills within 2s to build a COMBO — 10/25/50 slams RAMPAGE/VOIDSTORM/ASCENDANT.'],
+    ['#ffffff', '  Long chains pay bonus CORES at run end (+1% per 10 combo, cap +25%).'],
+    ['#ffffff', '  ACHIEVEMENTS [A] pay cores/prisms for lifetime milestones. DAILY BREACH [Y] is a'],
+    ['#ffffff', '  date-seeded run with 2 fixed mutations — beat your own ghost, 60◇ first clear.'],
+    ['#4de8ff', ''],
+    ['#d96bff', 'VOID DIAL — MUTATIONS [D]'],
+    ['#ffffff', '  Pre-run toggles that stack: CURSED CORES +50% XP · GLASS HULL +40% dmg −40% HP'],
+    ['#ffffff', '  SWARM PROTOCOL +80% density +30% score · IRON MAN no heals +100% cores.'],
+    ['#ffffff', '  3+ mutations = MUTANT: ×1.5 VOIDPASS XP for that run. Own the pain.'],
+    ['#4de8ff', ''],
     ['#c9b8ff', 'VOIDPASS — SEASON 1'],
     ['#ffffff', '  Every run earns BP XP toward 30 season tiers with FREE rewards.'],
     ['#ffffff', '  PRIME adds a second reward per tier — unlock with prisms or the demo purchase.'],
@@ -338,8 +384,10 @@ function drawHelp(r: Renderer, g: Game): void {
     ['#ffffff', '  VOLATILES blink, then detonate — kill them at range or dash past the blast.'],
     ['#ffffff', '  LANCERS aim a heavy bolt — break the line or dodge the telegraph.'],
     ['#ffffff', '  MENDERS heal the swarm — focus them first. PHANTOMS slip out of reality.'],
-    ['#ffffff', '  ELITES (orange ring) are 6× tougher: Burst / Swift / Shield.'],
-    ['#ffffff', '  In ENDLESS, a fourth titan hunts you: THE DREAMING LEVIATHAN sows mines.'],
+    ['#ffffff', '  ELITES (orange ring) are 6× tougher and roll AFFIXES — watch the pips:'],
+    ['#ffffff', '    BURST · SWIFT · SHIELD · THORNS (punishes dashes) · VAMPIRIC (heals allies)'],
+    ['#ffffff', '    FROST AURA (chills you) · EXPLOSIVE (telegraphed death blast) · MIRROR (reflects bullets)'],
+    ['#ffffff', '  More affixes = more payout. In ENDLESS, a fourth titan hunts you: THE LEVIATHAN.'],
   ];
   let y = py + 66;
   ctx.font = font(11, 600);
@@ -480,6 +528,145 @@ function drawSettings(r: Renderer, g: Game): void {
   button(r, g, 'settings_back', 'BACK [ESC]', px, y + 8, pw, 40, '#9adcff');
 }
 
+// ================= VOID DIAL (v1.2 mutations) =================
+
+function drawDial(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.82);
+  const m = g.meta.data;
+
+  ctx.textAlign = 'center';
+  ctx.font = font(26, 800);
+  ctx.fillStyle = '#d96bff';
+  ctx.fillText('VOID DIAL', W / 2, 54);
+  ctx.font = font(11, 600);
+  ctx.fillStyle = '#8fa3c0';
+  ctx.fillText('twist the rules against yourself — the void pays you back', W / 2, 74);
+
+  const pw = Math.min(680, W - 60);
+  const px = (W - pw) / 2;
+  const rowH = 74;
+  let y = 100;
+  for (let i = 0; i < MUTATIONS.length; i++) {
+    const mut = MUTATIONS[i];
+    const on = m.mutations.includes(mut.id);
+    const selected = g.dialIndex === i;
+    panel(r, px, y, pw, rowH - 8, selected ? mut.color : 'rgba(90,160,255,0.25)');
+
+    ctx.textAlign = 'left';
+    ctx.font = font(14, 800);
+    ctx.fillStyle = mut.color;
+    ctx.fillText(mut.name, px + 16, y + 24);
+    ctx.font = font(10.5, 500);
+    ctx.fillStyle = '#aebdd4';
+    ctx.fillText(mut.desc, px + 16, y + 42);
+    ctx.font = font(10.5, 700);
+    ctx.fillStyle = '#6dff8c';
+    ctx.fillText(`REWARD: ${mut.reward}`, px + 16, y + 58);
+
+    // toggle
+    ctx.textAlign = 'right';
+    ctx.font = font(14, 800);
+    ctx.fillStyle = on ? '#6dff8c' : '#5a6a85';
+    ctx.fillText(on ? '● ON' : '○ OFF', px + pw - 20, y + 30);
+    reg(r, g, `dial_toggle_${mut.id}`, px, y, pw, rowH - 8);
+    y += rowH;
+  }
+
+  // mutant status
+  const active = m.mutations.length;
+  ctx.textAlign = 'center';
+  ctx.font = font(12, 800);
+  ctx.fillStyle = active >= 3 ? '#ffd94d' : '#8fa3c0';
+  ctx.fillText(
+    `${active}/${MUTATIONS.length} ACTIVE${active >= 3 ? `  —  ★ MUTANT ×${MUTANT_BONUS_MULT} BP XP THIS RUN` : `  —  stack 3+ for ×${MUTANT_BONUS_MULT} BP XP`}`,
+    W / 2,
+    y + 22
+  );
+  ctx.font = font(10, 500);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('↑/↓ select · ENTER toggle · mutations apply to every normal run until switched off', W / 2, y + 42);
+
+  button(r, g, 'dial_back', 'BACK [ESC]', px, y + 56, pw, 40, '#9adcff');
+}
+
+// ================= ACHIEVEMENTS (v1.2) =================
+
+const ACH_VISIBLE = 8;
+
+function drawAchievements(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.82);
+  const m = g.meta.data;
+  const done = unlockedCount(m);
+
+  ctx.textAlign = 'center';
+  ctx.font = font(26, 800);
+  ctx.fillStyle = '#ffe066';
+  ctx.fillText(`ACHIEVEMENTS — ${done}/${ACHIEVEMENTS.length}`, W / 2, 54);
+  ctx.font = font(10.5, 600);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('lifelong milestones · rewards pay out instantly · ↑/↓ browse', W / 2, 74);
+
+  const pw = Math.min(720, W - 60);
+  const px = (W - pw) / 2;
+  const rowH = 52;
+  // keep the selected row in view
+  const maxStart = Math.max(0, ACHIEVEMENTS.length - ACH_VISIBLE);
+  const start = Math.max(0, Math.min(maxStart, g.achIndex - Math.floor(ACH_VISIBLE / 2)));
+  let y = 96;
+  for (let i = start; i < Math.min(ACHIEVEMENTS.length, start + ACH_VISIBLE); i++) {
+    const a = ACHIEVEMENTS[i];
+    const unlockedAt = m.achievements[a.id];
+    const selected = i === g.achIndex;
+    const color = TIER_COLORS[a.tier];
+    panel(r, px, y, pw, rowH - 8, unlockedAt ? color : selected ? 'rgba(174,189,212,0.55)' : 'rgba(90,160,255,0.2)');
+
+    ctx.textAlign = 'left';
+    ctx.font = font(13, 800);
+    ctx.fillStyle = unlockedAt ? color : selected ? '#ffffff' : '#8fa3c0';
+    ctx.fillText(a.name, px + 16, y + 21);
+    ctx.font = font(10, 500);
+    ctx.fillStyle = '#aebdd4';
+    ctx.fillText(a.desc, px + 16, y + 37);
+
+    ctx.textAlign = 'right';
+    ctx.font = font(11, 700);
+    if (unlockedAt) {
+      ctx.fillStyle = '#6dff8c';
+      ctx.fillText('★ UNLOCKED', px + pw - 16, y + 24);
+      ctx.font = font(9.5, 600);
+      ctx.fillStyle = achievementRewardLabel(a).includes('◇') ? '#c9b8ff' : '#6dff8c';
+      ctx.fillText(achievementRewardLabel(a), px + pw - 16, y + 39);
+    } else {
+      const cur = achievementValue(m, a.metric);
+      ctx.fillStyle = '#ffd94d';
+      ctx.fillText(achievementRewardLabel(a), px + pw - 16, y + 21);
+      ctx.font = font(9.5, 600);
+      ctx.fillStyle = '#8fa3c0';
+      const curTxt = a.metric === 'bestScore' || a.metric === 'coresEarned' ? fmtScore(Math.min(cur, a.target)) : String(Math.min(cur, a.target));
+      ctx.fillText(`${curTxt} / ${a.metric === 'bestScore' || a.metric === 'coresEarned' ? fmtScore(a.target) : a.target}`, px + pw - 16, y + 37);
+    }
+
+    // tier chip
+    ctx.textAlign = 'left';
+    ctx.font = font(9, 800);
+    ctx.fillStyle = color;
+    ctx.fillText(`T${a.tier}`, px + pw - 30, y + 21);
+    y += rowH;
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = font(9.5, 500);
+  ctx.fillStyle = '#3d4a63';
+  ctx.fillText(`${done ? `${done} of ${ACHIEVEMENTS.length} claimed` : 'none claimed yet — the void is waiting'}`, W / 2, y + 18);
+  button(r, g, 'ach_back', 'BACK [ESC]', px, y + 30, pw, 40, '#9adcff');
+}
+
 function statRow(r: Renderer, x: number, y: number, w: number, label: string, value: string, color = '#ffffff'): void {
   const ctx = r.ctx;
   ctx.textAlign = 'left';
@@ -490,6 +677,59 @@ function statRow(r: Renderer, x: number, y: number, w: number, label: string, va
   ctx.font = font(16, 800);
   ctx.fillStyle = color;
   ctx.fillText(value, x + w, y);
+}
+
+/** v1.2 run-end ceremony: daily record, combo payout, mutant bonus, new achievements. */
+function drawRunEndExtras(r: Renderer, g: Game, x: number, y: number, w: number): void {
+  const ctx = r.ctx;
+  let cy = y;
+  if (g.dailyMode) {
+    const first = g.dailyPrismReward > 0;
+    ctx.textAlign = 'left';
+    ctx.font = font(11, 800);
+    ctx.fillStyle = '#ffd166';
+    ctx.fillText(
+      `DAILY BREACH — BEST TODAY ${fmtScore(g.meta.data.daily.bestScore)} (WAVE ${g.meta.data.daily.bestWave})${first ? `  ·  +${g.dailyPrismReward}◇ FIRST CLEAR` : ''}`,
+      x,
+      cy
+    );
+    cy += 17;
+  }
+  if (g.runMutations.length >= 3) {
+    ctx.textAlign = 'left';
+    ctx.font = font(11, 800);
+    ctx.fillStyle = '#d96bff';
+    ctx.fillText(`★ MUTANT — ${g.runMutations.length} MUTATIONS · ×${MUTANT_BONUS_MULT} BP XP`, x, cy);
+    cy += 17;
+  }
+  if (g.runMaxCombo >= 10) {
+    const pct = Math.min(25, Math.floor(g.runMaxCombo / 10));
+    ctx.textAlign = 'left';
+    ctx.font = font(11, 800);
+    ctx.fillStyle = '#ff9a3d';
+    ctx.fillText(`BEST CHAIN ×${g.runMaxCombo}  ·  +${pct}% CORES`, x, cy);
+    cy += 17;
+  }
+  if (g.newAchievements.length > 0) {
+    ctx.textAlign = 'left';
+    ctx.font = font(11, 800);
+    ctx.fillStyle = '#ffe066';
+    const names = g.newAchievements.slice(0, 2).map((a) => a.name);
+    const extra = g.newAchievements.length - 2;
+    ctx.fillText(
+      `★ ${g.newAchievements.length} ACHIEVEMENT${g.newAchievements.length > 1 ? 'S' : ''}: ${names.join(', ')}${extra > 0 ? ` +${extra} more` : ''}`,
+      x,
+      cy
+    );
+    cy += 17;
+    for (const a of g.newAchievements.slice(0, 2)) {
+      ctx.font = font(10, 600);
+      ctx.fillStyle = '#aebdd4';
+      ctx.fillText(`   ${a.name} — ${a.desc} (${a.reward})`, x, cy);
+      cy += 14;
+    }
+  }
+  void w;
 }
 
 function drawRunEndSeason(r: Renderer, g: Game, x: number, y: number, w: number): void {
@@ -604,6 +844,7 @@ function drawGameOver(r: Renderer, g: Game): void {
 
   // season ceremony
   drawRunEndSeason(r, g, px + 20, y + 12, pw - 40);
+  drawRunEndExtras(r, g, px + 20, y + 12 + 148 + 14, pw - 40);
 
   button(r, g, 'over_retry', 'RE-DEPLOY [ENTER]', px + 30, py + ph - 92, pw - 60, 44, '#4de8ff', 16);
   button(r, g, 'over_title', 'TITLE [T]   ·   VOIDPASS [B]', px + 30, py + ph - 40, pw - 60, 34, '#9adcff', 13);
@@ -655,6 +896,7 @@ function drawVictory(r: Renderer, g: Game): void {
 
   // season ceremony
   drawRunEndSeason(r, g, px + 20, y + 12, pw - 40);
+  drawRunEndExtras(r, g, px + 20, y + 12 + 148 + 14, pw - 40);
 
   button(r, g, 'victory_endless', 'DIVE INTO ENDLESS [C]', px + 30, py + ph - 92, pw - 60, 44, '#ffd94d', 15);
   button(r, g, 'victory_title', 'TITLE [T]   ·   VOIDPASS [B]', px + 30, py + ph - 40, pw - 60, 36, '#9adcff', 13);

@@ -21,7 +21,8 @@ import {
   nextContractId,
   settleContracts,
 } from '../src/game/economy';
-import type { MetaSave, RunStats } from '../src/game/types';
+import type { MetaSave } from '../src/game/types';
+import type { RunStats } from '../src/game/economy';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ''): void {

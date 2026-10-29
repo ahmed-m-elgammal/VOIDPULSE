@@ -67,7 +67,9 @@ export function updatePlayer(g: Game, dt: number): void {
   if (!g.input.dash) g.input.dash = false; // consumed or released
 
   // --- movement ---
-  const speed = PLAYER_BASE.speed * p.stats.speedMult * (p.overdrive > 0 ? 1.15 : 1);
+  // FROST AURA elites chill the player — thrusters run at 72% while chilled
+  const chill = g.playerChillT > 0 ? 0.72 : 1;
+  const speed = PLAYER_BASE.speed * p.stats.speedMult * (p.overdrive > 0 ? 1.15 : 1) * chill;
   if (p.dashTimer > 0) {
     p.dashTimer -= dt;
     const ds = 950;
@@ -154,6 +156,11 @@ function dashStrike(g: Game): void {
         g.audio.sfx('dashKill');
       } else {
         g.damageEnemy(e, dmg, false, 'dash');
+      }
+      // THORNS affix: dashing into the elite reflects a slice of the damage
+      if (e.mods.includes('thorns')) {
+        g.damagePlayer(Math.max(1, dmg * 0.15), e.x, e.y);
+        g.spawnParticleBurst(p.x, p.y, '#ff5c5c', 6, 150, 2.5);
       }
       g.spawnParticleBurst(e.x, e.y, e.def.color, 6, 160, 3);
     }

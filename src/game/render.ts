@@ -6,6 +6,7 @@ import { TAU, clamp, fmtScore, fmtTime } from './utils';
 import { WEAPONS, WORLD_H, WORLD_W } from './content';
 import { drawMenus, drawLevelUpCards } from './renderUI';
 import { skinOf } from './skins';
+import { MUTATIONS } from './mutations';
 
 const MONO = `ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace`;
 
@@ -32,6 +33,18 @@ const CB_MAP: Record<ColorblindMode, Record<string, string>> = {
 function font(size: number, weight = 400): string {
   return `${weight} ${size}px ${MONO}`;
 }
+
+// v1.2 elite affix pip colors (also used by the VOID DIAL screen)
+const AFFIX_COLORS: Record<string, string> = {
+  burst: '#ff9a3d',
+  swift: '#9dff6d',
+  shield: '#9adcff',
+  thorns: '#ff5c5c',
+  vampiric: '#ff4d7e',
+  frostAura: '#8fd8ff',
+  explosive: '#ffa04d',
+  mirror: '#b7a4ff',
+};
 
 interface Star {
   x: number;
@@ -342,6 +355,8 @@ export class Renderer {
       case 'pass':
       case 'market':
       case 'settings':
+      case 'dial':
+      case 'achievements':
         drawMenus(this, g);
         break;
       case 'playing':
@@ -367,6 +382,12 @@ export class Renderer {
       ctx.globalAlpha = g.flashAlpha * 0.45;
       ctx.fillRect(0, 0, this.viewW, this.viewH);
       ctx.globalAlpha = 1;
+    }
+
+    // frost-aura chill tint — a cold breath over the lens
+    if (g.playerChillT > 0) {
+      ctx.fillStyle = 'rgba(120,200,255,0.09)';
+      ctx.fillRect(0, 0, this.viewW, this.viewH);
     }
 
     // vignette
@@ -1009,8 +1030,87 @@ export class Renderer {
       ctx.globalAlpha = 1;
       ctx.restore();
     }
-    // shield mod indicator
-    if (e.mod === 'shield' && e.shieldHits > 0) {
+
+    // v1.2 affix visuals
+    if (e.elite && e.mods.length > 0) {
+      // FROST AURA: pulsing cold field
+      if (e.mods.includes('frostAura')) {
+        const R = 155;
+        ctx.globalAlpha = 0.06 + Math.sin(this.t * 3) * 0.02;
+        ctx.fillStyle = '#8fd8ff';
+        ctx.beginPath();
+        ctx.arc(x, y, R, 0, TAU);
+        ctx.fill();
+        ctx.globalAlpha = 0.35;
+        ctx.strokeStyle = '#8fd8ff';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([6, 10]);
+        ctx.beginPath();
+        ctx.arc(x, y, R, this.t * 0.6, this.t * 0.6 + TAU);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+      // EXPLOSIVE: warning blink
+      if (e.mods.includes('explosive')) {
+        ctx.globalAlpha = 0.5 + Math.sin(this.t * 9) * 0.4;
+        ctx.strokeStyle = '#ffa04d';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, e.radius + 15, 0, TAU);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // VAMPIRIC: pre-pulse flush
+      if (e.mods.includes('vampiric') && e.healT < 0.4) {
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = '#ff4d7e';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(x, y, e.radius + 7, 0, TAU);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // THORNS: spikes on the ring
+      if (e.mods.includes('thorns')) {
+        ctx.strokeStyle = this.cbColor('#ff5c5c');
+        ctx.lineWidth = 1.6;
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * TAU + this.t * 0.5;
+          ctx.beginPath();
+          ctx.moveTo(x + Math.cos(a) * (e.radius + 4), y + Math.sin(a) * (e.radius + 4));
+          ctx.lineTo(x + Math.cos(a) * (e.radius + 10), y + Math.sin(a) * (e.radius + 10));
+          ctx.stroke();
+        }
+      }
+      // MIRROR: violet shimmer arc
+      if (e.mods.includes('mirror')) {
+        ctx.globalAlpha = 0.4 + Math.sin(this.t * 4) * 0.2;
+        ctx.strokeStyle = '#b7a4ff';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(x, y, e.radius + 5, this.t * 2, this.t * 2 + 2.2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(x, y, e.radius + 5, this.t * 2 + Math.PI, this.t * 2 + Math.PI + 2.2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // affix pips — one colored diamond per affix, above the hp bar
+      const n = e.mods.length;
+      for (let i = 0; i < n; i++) {
+        const px = x - ((n - 1) * 9) / 2 + i * 9;
+        const py = y - e.radius - 24;
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = this.cbColor(AFFIX_COLORS[e.mods[i]] ?? '#ffffff');
+        ctx.fillRect(-3, -3, 6, 6);
+        ctx.restore();
+      }
+    }
+    // shield affix indicator
+    if (e.mods.includes('shield') && e.shieldHits > 0) {
       ctx.strokeStyle = '#9adcff';
       ctx.lineWidth = 2;
       for (let i = 0; i < e.shieldHits; i++) {
@@ -1203,6 +1303,19 @@ export class Renderer {
     ctx.fillStyle = '#c9b8ff';
     ctx.fillRect(hx + 48, hy + 58, 90 * frac2, 4);
 
+    // v1.2 mutation tags (top-left, below bp sliver)
+    if (g.runMutations.length > 0) {
+      let tagY = hy + 76;
+      ctx.font = font(9, 800);
+      ctx.textAlign = 'left';
+      for (const id of g.runMutations) {
+        const md = MUTATIONS.find((mm) => mm.id === id);
+        ctx.fillStyle = md?.color ?? '#ffffff';
+        ctx.fillText(`▲ ${md?.name ?? id}`, hx + 48, tagY);
+        tagY += 13;
+      }
+    }
+
     // ---- score (top-right) ----
     ctx.textAlign = 'right';
     ctx.font = font(22, 700);
@@ -1212,6 +1325,21 @@ export class Renderer {
     ctx.fillStyle = '#8fa3c0';
     ctx.fillText(`KILLS ${g.kills}`, this.viewW - 24, 56);
 
+    // ---- combo meter (top-right, under kills) ----
+    if (g.combo >= 2) {
+      const tier = g.combo >= 50 ? 3 : g.combo >= 25 ? 2 : g.combo >= 10 ? 1 : 0;
+      const col = ['#dfeeff', '#ffd94d', '#ff9a3d', '#c9b8ff'][tier];
+      ctx.textAlign = 'right';
+      ctx.font = font(tier >= 2 ? 17 : 14, 800);
+      ctx.fillStyle = col;
+      ctx.fillText(`${g.combo} COMBO`, this.viewW - 24, 76 + tier * 2);
+      const bw = 96;
+      ctx.fillStyle = 'rgba(10,16,28,0.8)';
+      ctx.fillRect(this.viewW - 24 - bw, 84, bw, 4);
+      ctx.fillStyle = col;
+      ctx.fillRect(this.viewW - 24 - bw, 84, bw * clamp(g.killChainT / 2, 0, 1), 4);
+    }
+
     // ---- wave / time (top-center) ----
     ctx.textAlign = 'center';
     ctx.font = font(15, 700);
@@ -1220,6 +1348,12 @@ export class Renderer {
     ctx.font = font(11, 600);
     ctx.fillStyle = '#8fa3c0';
     ctx.fillText(fmtTime(g.time), this.viewW / 2, 47);
+    // daily breach tag
+    if (g.dailyMode && !(g.boss && g.bossState && g.bossState.intro <= 0)) {
+      ctx.font = font(10, 800);
+      ctx.fillStyle = '#ffd166';
+      ctx.fillText('◆ DAILY BREACH ◆', this.viewW / 2, 62);
+    }
 
     // boss bar
     if (g.boss && g.bossState && g.bossState.intro <= 0) {
@@ -1323,6 +1457,24 @@ export class Renderer {
       ctx.font = font(13, 500);
       ctx.fillStyle = bt.color;
       ctx.fillText(bt.title, this.viewW / 2, this.viewH * 0.36 + 66);
+      ctx.globalAlpha = 1;
+    }
+
+    // v1.2 combo tier banner — RAMPAGE / VOIDSTORM / ASCENDANT
+    if (g.comboBanner) {
+      const b = g.comboBanner;
+      const a = clamp(b.t / 1.4, 0, 1);
+      const pop = 1 + Math.max(0, b.t - 1.15) * 2.4; // slam-in scale
+      const labels = ['RAMPAGE', 'VOIDSTORM', 'ASCENDANT'];
+      const cols = ['#ffd94d', '#ff9a3d', '#c9b8ff'];
+      ctx.globalAlpha = Math.min(1, a * 1.8);
+      ctx.textAlign = 'center';
+      ctx.font = font(44 * pop, 800);
+      ctx.fillStyle = cols[b.tier - 1];
+      ctx.fillText(labels[b.tier - 1], this.viewW / 2, this.viewH * 0.24);
+      ctx.font = font(13, 700);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`${g.combo} KILL CHAIN`, this.viewW / 2, this.viewH * 0.24 + 26);
       ctx.globalAlpha = 1;
     }
   }
