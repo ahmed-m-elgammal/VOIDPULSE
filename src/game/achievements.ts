@@ -3,6 +3,7 @@
 // Unlocks land in MetaSave.achievements (id -> epoch ms) and toast at run end.
 
 import type { MetaSave } from './types';
+import { ascLevelOf } from './ascension';
 
 export type AchMetric =
   | 'kills'
@@ -17,7 +18,8 @@ export type AchMetric =
   | 'coresEarned'
   | 'contracts'
   | 'passLevel'
-  | 'daily';
+  | 'daily'
+  | 'ascension';
 
 export interface AchievementDef {
   id: string;
@@ -66,6 +68,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   A('contracts_5', 'CONTRACTOR', 'Clear 5 season contracts', 'contracts', 5, 3, undefined, 35),
   A('score_80k', 'HIGH SCORER', 'Score 80,000 in a single run', 'bestScore', 80000, 3, undefined, 45),
   A('pass_10', 'SEASONED PILOT', 'Reach VOIDPASS tier 10', 'passLevel', 10, 3, undefined, 35),
+  A('asc_5', 'ASCENDANT', 'Reach Ascension Lv 5 (NG+)', 'ascension', 5, 3, undefined, 40),
 
   // ---- tier 4: legend ----
   A('kills_20k', 'VOIDSOUL', 'Defeat 20,000 enemies (lifetime)', 'kills', 20000, 4, undefined, 90),
@@ -74,6 +77,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   A('pass_30', 'SEASON MASTER', 'Finish VOIDPASS tier 30', 'passLevel', 30, 4, undefined, 120),
   A('cores_50k', 'PRISM BARON', 'Earn 50,000 CORES from runs (lifetime)', 'coresEarned', 50000, 4, undefined, 90),
   A('daily_1', 'DAILY BREACHER', 'Complete a DAILY BREACH run', 'daily', 1, 3, undefined, 60),
+  A('asc_10', 'DEEP CORE', 'Reach Ascension Lv 10 (NG+)', 'ascension', 10, 4, undefined, 90),
 ];
 
 export const TIER_COLORS: Record<number, string> = {
@@ -111,6 +115,8 @@ export function achievementValue(m: MetaSave, metric: AchMetric): number {
       return m.wins;
     case 'daily':
       return m.daily.completed ? 1 : 0;
+    case 'ascension':
+      return ascLevelOf(m);
     default:
       return 0;
   }

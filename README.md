@@ -2,7 +2,7 @@
 
 **VOIDPULSE** is a fast, neon-soaked arena survivor roguelite that runs entirely in your browser. Pilot a lone combat hull inside the VOID, shred escalating swarms, collect XP cores, build absurd weapon synergies, and survive the Leviathan at the end of the run — then spend what you earned in the market and grind the VOIDPASS season.
 
-> Current version: **v1.3.0**
+> Current version: **v1.4.0**
 
 ![Title](download/v1_title.png)
 
@@ -19,6 +19,7 @@
 - **Elite affixes** — every elite rolls 1–2 affixes (Burst, Swift, Shield, Thorns, Vampiric, Frost Aura, Explosive, Mirror) shown as colored pips; richer affixes pay better.
 - **Combo meter** — chain kills within 2s; 10/25/50 slams RAMPAGE / VOIDSTORM / ASCENDANT banners and long chains pay bonus Cores at run end.
 - **Anti-stall valve** — if a wave's cleanup drags (heal-stacked swarms), THE VOID HUNGERS: escalating decay guarantees the run always moves.
+- **ASCENSION (NG+)** — after your first victory, a permanent endgame tree opens. Nine nodes across three branches — **HUNGER** (enemy HP / damage / bullet speed), **HORDE** (spawn density / burst size / sim cap) and **CORRUPTION** (elite floor, richer affixes, boss HP) — each rank is a permanent commitment that twists the run harder and pays a bigger Cores multiplier (+8% per rank, all the way to ×5). Daily Breach stays ascension-free.
 - **Difficulty** — medium-to-hard, easy to understand: simple controls, deep build decisions, a real win condition and a real lose condition.
 
 ## Meta progression (Season One)
@@ -33,7 +34,7 @@
 - **Currencies** — **Cores** (soft, earned in runs) and **Prisms ◇** (premium, from the pass, contracts and the exchange).
 - **VOID DIAL** — pre-run mutation toggles (Cursed Cores, Glass Hull, Swarm Protocol, Iron Man); stack 3+ to earn the ×1.5 BP **MUTANT** bonus.
 - **DAILY BREACH** — a date-seeded run with 2 fixed mutations; personal-best stamp and a one-time 60◇ completion prism. No leaderboard — you race your own ghost.
-- **Achievements** — 25 lifetime milestones across 4 tiers paying Cores/Prisms, with a full progress screen.
+- **Achievements** — 27 lifetime milestones across 4 tiers paying Cores/Prisms, with a full progress screen.
 - **Skins & meta perks** — persistent cosmetics and run-modifier perks that survive death.
 - Progress is saved locally between sessions.
 

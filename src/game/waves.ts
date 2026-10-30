@@ -21,13 +21,15 @@ export function startWave(g: Game, wave: number): void {
   g.waveTimer = isBoss ? 0 : WAVE_CONFIG.duration(wave);
   // SWARM PROTOCOL: denser waves — bigger budget, shorter gaps, raised cap (see g.maxEnemies)
   const swarm = g.runMutations.includes('swarmProtocol');
-  g.spawnBudget = Math.ceil(WAVE_CONFIG.budget(wave) * (swarm ? 1.8 : 1));
+  g.spawnBudget = Math.ceil(WAVE_CONFIG.budget(wave) * (swarm ? 1.8 : 1) * g.asc.density); // v1.4 ascension density
   g.spawnTimer = isBoss ? 2.5 : 1.2;
   g.spawnInterval = WAVE_CONFIG.spawnInterval(wave) * (swarm ? 0.65 : 1);
   g.bossActive = isBoss;
   g.audio.setBoss(isBoss); // v1.2 stems: the boss layer rides the mix
   g.waveIntroT = 2.2;
-  g.eliteChance = WAVE_CONFIG.eliteChance(wave);
+  // v1.4 — ELITE VANGUARD: the elite floor creeps toward wave 1 (+flat chance)
+  g.eliteChance =
+    wave >= g.asc.eliteFloor ? Math.min(0.05 + wave * 0.011, 0.22) + g.asc.eliteChanceBonus : 0;
   g.spawnPool = spawnPoolForWave(wave);
   g.minionTimer = 6;
 
@@ -41,6 +43,8 @@ export function startWave(g: Game, wave: number): void {
       idx = k % 4; // four deep-dwellers rotate through the endless dark
       hpMult = Math.pow(1.45, k);
     }
+    // v1.4 — ASCENDANT SIGILS: the deep-dwellers harden
+    hpMult *= g.asc.bossHpMult;
     g.pendingBoss = { idx, hpMult };
   } else {
     g.pendingBoss = null;
@@ -151,7 +155,8 @@ function clampWorld(v: number, max: number): number {
 }
 
 function spawnTick(g: Game): void {
-  const burst = Math.random() < 0.16 && g.wave >= 2 ? 4 : 1;
+  // v1.4 — BROOD BURSTS: ascension packs extra bodies into every burst
+  const burst = Math.random() < 0.16 && g.wave >= 2 ? 4 + g.asc.burstAdd : 1;
   for (let i = 0; i < burst && g.spawnBudget > 0; i++) {
     if (g.enemies.length >= g.maxEnemies) return;
     const def = weightedPick(g.spawnPool, Math.random);

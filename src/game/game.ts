@@ -74,6 +74,16 @@ import { evaluateAchievements, ACHIEVEMENTS, type AchievementUnlock } from './ac
 import { DAILY_COMPLETION_PRISMS, dailyMutationsFor, dailySeedFor, todayKey } from './daily';
 import { RELICS, relicOf } from './relics';
 import { companionOf, updateCompanion } from './companions';
+import {
+  ASC_NODES,
+  NO_ASCENSION,
+  ascNodeOf,
+  buyAscNode,
+  canBuyAscNode,
+  computeAscension,
+  type AscNodeDef,
+  type AscensionState,
+} from './ascension';
 
 interface DelayedCall {
   t: number;
@@ -178,6 +188,9 @@ export class Game {
   companion: CompanionState | null = null;
   beams: Beam[] = [];
 
+  // v1.4 — ASCENSION (NG+) run modifiers, resolved at startRun
+  asc: AscensionState = NO_ASCENSION;
+
   // v1.2 — run configuration (VOID DIAL mutations / daily breach)
   runMutations: string[] = [];
   scoreMult = 1;
@@ -242,6 +255,7 @@ export class Game {
   contractResults: ContractComplete[] = [];
   marketTab = 0;
   passSelectedTier = 1;
+  ascIndex = 0; // ascension tree keyboard cursor
 
   // ui
   menuIndex = 0;
@@ -411,6 +425,9 @@ export class Game {
     }
     this.scoreMult = this.runMutations.includes('swarmProtocol') ? SWARM_SCORE_MULT : 1;
     this.maxEnemies = this.runMutations.includes('swarmProtocol') ? MAX_ENEMIES + 40 : MAX_ENEMIES;
+    // v1.4 — resolve the ascension tree into run modifiers (daily breach stays clean)
+    this.asc = computeAscension(this.meta.data, this.dailyMode);
+    this.maxEnemies += this.asc.capAdd;
     this.runEvolutions = 0;
     this.newAchievements = [];
     this.resetPlayer();
@@ -532,6 +549,8 @@ export class Game {
     // combo payout: +1% cores per 10 best chain, capped +25%
     const comboBonus = Math.min(0.25, Math.floor(this.runMaxCombo / 10) * 0.01);
     this.coresEarned = Math.round(this.coresEarned * (1 + comboBonus));
+    // v1.4 — ascension pays: ×cores per total rank bought
+    if (this.asc.coresMult > 1) this.coresEarned = Math.round(this.coresEarned * this.asc.coresMult);
     const run: RunStats = {
       wave: this.wave,
       kills: this.kills,
@@ -766,10 +785,10 @@ export class Game {
     const dmgScale = WAVE_CONFIG.dmgScale(wave);
     const spdScale = WAVE_CONFIG.spdScale(wave);
     const eliteMult = elite ? 6 : 1;
-    const mods = elite ? rollEliteMods(this.rng, wave) : [];
+    const mods = elite ? rollEliteMods(this.rng, wave, this.asc.affixTier) : [];
     const affixMult = elite ? 1 + 0.35 * (mods.length - 1) : 1; // richer affixes pay better
     const swift = mods.includes('swift');
-    const hp = base.hp * hpScale * eliteMult;
+    const hp = base.hp * hpScale * eliteMult * this.asc.enemyHp;
     const e = this.enemyPool.acquire();
     e.eid = this.nextEid();
     e.def = base;
@@ -785,7 +804,7 @@ export class Game {
       spdScale *
       (swift ? 1.45 : 1) *
       (this.runMutations.includes('cursedCores') ? 1.3 : 1); // CURSED CORES
-    e.damage = base.damage * dmgScale * (elite ? 1.4 : 1);
+    e.damage = base.damage * dmgScale * (elite ? 1.4 : 1) * this.asc.enemyDmg;
     e.xp = base.xp * (elite ? 6 * affixMult : 1);
     e.score = base.score * (elite ? 8 * affixMult : 1);
     e.elite = elite;
@@ -1215,6 +1234,29 @@ export class Game {
     this.audio.sfx('select');
   }
 
+  // ---------------- v1.4 — ASCENSION (NG+) ----------------
+
+  ascNodeAt(index: number): AscNodeDef | null {
+    return ASC_NODES[index] ?? null;
+  }
+
+  buyAscension(id: string): void {
+    const node = ascNodeOf(id);
+    if (!node) return;
+    const check = buyAscNode(this.meta.data, node);
+    if (!check.ok) {
+      this.audio.sfx('error');
+      return;
+    }
+    this.meta.save();
+    this.audio.sfx('buy');
+  }
+
+  canBuyAscension(id: string): string {
+    const node = ascNodeOf(id);
+    return node ? canBuyAscNode(this.meta.data, node).reason : '';
+  }
+
   recomputeStats(): void {
     const p = this.player;
     const oldMax = p.maxHp;
@@ -1441,6 +1483,11 @@ export class Game {
     b.telegraph = undefined;
     b.dead = false;
     Object.assign(b, o);
+    // v1.4 — FRENZIED SIGNALS: every hostile projectile flies faster
+    if (this.asc.bulletSpeed !== 1) {
+      b.vx *= this.asc.bulletSpeed;
+      b.vy *= this.asc.bulletSpeed;
+    }
     this.ebullets.push(b);
     return b;
   }
@@ -1611,6 +1658,10 @@ export class Game {
       this.equipCompanion(id.slice(12));
       return;
     }
+    if (id.startsWith('asc_buy_')) {
+      this.buyAscension(id.slice(8));
+      return;
+    }
     if (id.startsWith('tier_select_')) {
       const n = parseInt(id.slice(12), 10);
       if (!Number.isNaN(n) && n >= 1 && n <= 30) {
@@ -1642,6 +1693,10 @@ export class Game {
       case 'title_market':
         this.state = 'market';
         break;
+      case 'title_ascension':
+        this.state = 'ascension';
+        this.ascIndex = 0;
+        break;
       case 'title_perks':
         this.state = 'perks';
         this.perkIndex = 0;
@@ -1664,6 +1719,10 @@ export class Game {
         this.unlockPrimeDemo();
         break;
       case 'market_back':
+        this.state = 'title';
+        this.menuIndex = 0;
+        break;
+      case 'asc_back':
         this.state = 'title';
         this.menuIndex = 0;
         break;
@@ -1751,6 +1810,7 @@ export class Game {
             'title_dial',
             'title_pass',
             'title_market',
+            'title_ascension',
             'title_perks',
             'title_achievements',
             'title_settings',
@@ -1770,7 +1830,10 @@ export class Game {
           this.settingsIndex = 0;
         } else if (code === 'KeyH') this.state = 'help';
         else if (code === 'KeyY') this.startRun({ daily: true });
-        else if (code === 'KeyD') {
+        else if (code === 'KeyX') {
+          this.state = 'ascension';
+          this.ascIndex = 0;
+        } else if (code === 'KeyD') {
           this.state = 'dial';
           this.dialIndex = 0;
         } else if (code === 'KeyA') {
@@ -1778,11 +1841,36 @@ export class Game {
           this.achIndex = 0;
           this.achScroll = 0;
         } else if (code === 'ArrowUp' || code === 'KeyW') {
-          this.menuIndex = (this.menuIndex + 8) % 9;
+          this.menuIndex = (this.menuIndex + 9) % 10;
           this.audio.sfx('uiMove');
         } else if (code === 'ArrowDown' || code === 'KeyS') {
-          this.menuIndex = (this.menuIndex + 1) % 9;
+          this.menuIndex = (this.menuIndex + 1) % 10;
           this.audio.sfx('uiMove');
+        } else if (code === 'KeyM') this.toggleMute();
+        break;
+      }
+      case 'ascension': {
+        // tree grid: index = branch*3 + (tier-1). ↑/↓ climb tiers, ←/→ switch branches
+        const branch = Math.floor(this.ascIndex / 3);
+        const tier = this.ascIndex % 3;
+        if (code === 'Escape' || code === 'KeyX') {
+          this.state = 'title';
+          this.menuIndex = 0;
+        } else if (code === 'ArrowUp' || code === 'KeyW') {
+          this.ascIndex = branch * 3 + ((tier + 1) % 3);
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowDown' || code === 'KeyS') {
+          this.ascIndex = branch * 3 + ((tier + 2) % 3);
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowRight' || code === 'KeyD') {
+          this.ascIndex = ((branch + 1) % 3) * 3 + tier;
+          this.audio.sfx('uiMove');
+        } else if (code === 'ArrowLeft' || code === 'KeyA') {
+          this.ascIndex = ((branch + 2) % 3) * 3 + tier;
+          this.audio.sfx('uiMove');
+        } else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+          const node = this.ascNodeAt(this.ascIndex);
+          if (node) this.buyAscension(node.id);
         } else if (code === 'KeyM') this.toggleMute();
         break;
       }
@@ -2002,19 +2090,32 @@ export class Game {
 }
 
 /**
- * v1.2 elite affix roller — every elite gets 1 affix; wave 5+ elites have a
- * 30% chance of a second (distinct) affix. Heavy affixes unlock at wave 5.
- * Payout scales with affix count (see spawnEnemy).
+ * Elite affix roller — every elite gets 1 affix; wave 5+ elites have a 30%
+ * chance of a second (distinct) affix. Heavy affixes unlock at wave 5.
+ * v1.4 ascension TWIN AFFIXES: tier 1 guarantees the second affix, tier 2
+ * rolls 25% for a third. Payout scales with affix count (see spawnEnemy).
  */
-export function rollEliteMods(rng: () => number, wave: number): EliteMod[] {
+export function rollEliteMods(rng: () => number, wave: number, affixTier = 0): EliteMod[] {
   const light: EliteMod[] = ['burst', 'swift', 'shield'];
   const heavy: EliteMod[] = ['thorns', 'vampiric', 'frostAura', 'explosive', 'mirror'];
   const pool = wave >= 5 ? [...light, ...heavy] : light;
   const first = pool[Math.floor(rng() * pool.length) % pool.length];
   const mods: EliteMod[] = [first];
-  if (wave >= 5 && rng() < 0.3) {
+  if (wave >= 5) {
+    // TWIN AFFIXES (v1.4 ascension): tier 1 guarantees the second affix,
+    // tier 2 rolls a 25% chance for a third.
     const rest = pool.filter((m) => m !== first);
-    mods.push(rest[Math.floor(rng() * rest.length) % rest.length]);
+    if (affixTier >= 1) {
+      mods.push(rest[Math.floor(rng() * rest.length) % rest.length]);
+    } else if (rng() < 0.3) {
+      mods.push(rest[Math.floor(rng() * rest.length) % rest.length]);
+    }
+    if (affixTier >= 2 && mods.length < 3) {
+      const remaining = pool.filter((m) => !mods.includes(m));
+      if (remaining.length && rng() < 0.25) {
+        mods.push(remaining[Math.floor(rng() * remaining.length) % remaining.length]);
+      }
+    }
   }
   return mods;
 }

@@ -6,6 +6,7 @@ import { META_PERKS } from './content';
 import { CONTRACT_POOL } from './economy';
 import { mutationIds } from './mutations';
 import { COMPANIONS } from './companions';
+import { ASC_NODES } from './ascension';
 
 const KEY = 'voidpulse_save_v2';
 const KEY_V1 = 'voidpulse_save_v1';
@@ -33,7 +34,7 @@ export function defaultSettings(): Settings {
 
 export function defaultMeta(): MetaSave {
   return {
-    saveVersion: 2,
+    saveVersion: 3,
     seasonId: 1,
     cores: 0,
     prisms: 0,
@@ -64,6 +65,7 @@ export function defaultMeta(): MetaSave {
     achievements: {},
     companionsOwned: [],
     companionEquipped: '',
+    ascension: {},
     settings: defaultSettings(),
   };
 }
@@ -126,6 +128,18 @@ export function loadMeta(): MetaSave {
     if (!droneIds.has(meta.companionEquipped) || !meta.companionsOwned.includes(meta.companionEquipped)) {
       meta.companionEquipped = '';
     }
+    // v1.4 — ascension: valid ids, ranks clamped, prerequisite chain enforced
+    const ascSanitized: Record<string, number> = {};
+    for (const node of ASC_NODES) {
+      const raw = parsed.ascension?.[node.id];
+      let rank = typeof raw === 'number' ? Math.max(0, Math.min(node.maxRank, Math.floor(raw))) : 0;
+      if (rank > 0 && node.req) {
+        const have = ascSanitized[node.req.id] ?? 0;
+        if (have < node.req.rank) rank = 0; // prerequisite violated -> node hollows out
+      }
+      if (rank > 0) ascSanitized[node.id] = rank;
+    }
+    meta.ascension = ascSanitized;
     // sanitize settings
     meta.settings.shake = Math.max(0, Math.min(1, meta.settings.shake));
     meta.settings.volMaster = Math.max(0, Math.min(1, meta.settings.volMaster));

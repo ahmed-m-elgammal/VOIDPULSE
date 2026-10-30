@@ -363,6 +363,7 @@ export class Renderer {
       case 'market':
       case 'settings':
       case 'dial':
+      case 'ascension':
       case 'achievements':
         drawMenus(this, g);
         break;
@@ -1435,7 +1436,7 @@ export class Renderer {
     ctx.fillStyle = '#c9b8ff';
     ctx.fillRect(hx + 48, hy + 58, 90 * frac2, 4);
 
-    // v1.2 mutation tags + v1.3 relic chip (top-left, below bp sliver)
+    // v1.2 mutation tags + v1.4 ascension chip + v1.3 relic chip (top-left, below bp sliver)
     let tagY = hy + 76;
     if (g.runMutations.length > 0) {
       ctx.font = font(9, 800);
@@ -1446,6 +1447,13 @@ export class Renderer {
         ctx.fillText(`▲ ${md?.name ?? id}`, hx + 48, tagY);
         tagY += 13;
       }
+    }
+    if (g.asc.active) {
+      ctx.font = font(9, 800);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#ff5c8a';
+      ctx.fillText(`◈ ASCENSION LV ${g.asc.level} · ×${g.asc.coresMult.toFixed(2)} CORES`, hx + 48, tagY);
+      tagY += 13;
     }
     if (g.relic) {
       const rd = relicOf(g.relic);

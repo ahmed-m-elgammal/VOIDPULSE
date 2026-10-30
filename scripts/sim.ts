@@ -15,6 +15,16 @@ import { generateCards } from '../src/game/cards';
 import type { CardOption, GameState } from '../src/game/types';
 import { COMPANIONS } from '../src/game/companions';
 import { RELICS } from '../src/game/relics';
+import {
+  ASC_NODES,
+  ascCostOf,
+  ascCoresMult,
+  ascLevelOf,
+  ascNodeOf,
+  computeAscension,
+  nodeLocked,
+  nodeRank,
+} from '../src/game/ascension';
 
 const STEP = 1 / 60;
 
@@ -313,6 +323,102 @@ function testMetaAndShop(): string[] {
   return errors;
 }
 
+function testAscension(): string[] {
+  const errors: string[] = [];
+  const game = new Game(new AudioEngine());
+  const meta = game.meta.data;
+  meta.cores = 500000;
+
+  // ---- locked until the first victory ----
+  if (computeAscension(meta, false).active) errors.push('ascension active before any win');
+  const vanguard = ascNodeOf('vanguard')!;
+  const lockedCheck = nodeLocked(meta, vanguard);
+  if (!lockedCheck.locked) errors.push('tree nodes not locked before first win');
+  game.buyAscension('voidfed');
+  if (nodeRank(meta, 'voidfed') !== 0) errors.push('bought a rank while the tree was locked');
+
+  // ---- unlock + buy through the real action path ----
+  meta.endlessUnlocked = true;
+  game.buyAscension('voidfed');
+  if (nodeRank(meta, 'voidfed') !== 1) errors.push(`voidfed rank wrong: ${nodeRank(meta, 'voidfed')}`);
+  if (meta.cores <= 0 || meta.cores >= 500000) errors.push('cores not deducted on rank buy');
+
+  // ---- prerequisite gating: barbed needs voidfed lv2, frenzy needs barbed lv2 ----
+  const barbed = ascNodeOf('barbed')!;
+  if (!nodeLocked(meta, barbed).locked) errors.push('barbed should need voidfed lv2');
+  game.buyAscension('voidfed');
+  if (nodeRank(meta, 'voidfed') !== 2) errors.push(`voidfed rank 2 wrong: ${nodeRank(meta, 'voidfed')}`);
+  if (nodeLocked(meta, barbed).locked) errors.push('barbed still locked with voidfed lv2 met');
+  game.buyAscension('barbed');
+  if (nodeRank(meta, 'barbed') !== 1) errors.push('barbed rank 1 not bought with prereq met');
+  const frenzy = ascNodeOf('frenzy')!;
+  if (!nodeLocked(meta, frenzy).locked) errors.push('frenzy should need barbed lv2');
+  game.buyAscension('barbed');
+  if (nodeLocked(meta, frenzy).locked) errors.push('frenzy still locked with barbed lv2 met');
+
+  // ---- rank caps + empty pockets ----
+  for (let i = 0; i < 5; i++) game.buyAscension('vanguard'); // maxRank 2
+  if (nodeRank(meta, 'vanguard') !== 2) errors.push(`vanguard cap wrong: ${nodeRank(meta, 'vanguard')}`);
+  meta.cores = 0;
+  game.buyAscension('frenzy');
+  if (nodeRank(meta, 'frenzy') !== 0) errors.push('bought without cores');
+
+  // ---- aggregate math ----
+  meta.cores = 1000;
+  meta.ascension = { voidfed: 5, barbed: 3, frenzy: 2, swarm: 4, brood: 1, overflow: 2, vanguard: 2, twinAffix: 1, ascendant: 3 };
+  const asc = computeAscension(meta, false);
+  if (Math.abs(asc.enemyHp - 1.4) > 1e-9) errors.push(`enemyHp mult wrong: ${asc.enemyHp}`);
+  if (Math.abs(asc.enemyDmg - 1.18) > 1e-9) errors.push(`enemyDmg mult wrong: ${asc.enemyDmg}`);
+  if (Math.abs(asc.bulletSpeed - 1.2) > 1e-9) errors.push(`bulletSpeed mult wrong: ${asc.bulletSpeed}`);
+  if (Math.abs(asc.density - 1.32) > 1e-9) errors.push(`density mult wrong: ${asc.density}`);
+  if (asc.burstAdd !== 1 || asc.capAdd !== 40) errors.push('burst/cap modifiers wrong');
+  if (asc.eliteFloor !== 1 || asc.affixTier !== 1) errors.push('elite floor/affix tier wrong');
+  if (Math.abs(asc.bossHpMult - 1.54) > 1e-9) errors.push(`bossHp mult wrong: ${asc.bossHpMult}`);
+  if (Math.abs(asc.coresMult - ascCoresMult(23)) > 1e-9 || asc.level !== 23) errors.push('level/cores mult wrong');
+
+  // ---- daily breach stays clean ----
+  const dailyAsc = computeAscension(meta, true);
+  if (dailyAsc.active || dailyAsc.enemyHp !== 1) errors.push('daily breach should ignore ascension');
+
+  // ---- in-run application: enemies actually tougher, payout multiplied ----
+  game.startRun();
+  const m1 = game.spawnEnemy('mote', game.player.x + 50, game.player.y, false);
+  const hpWith = m1 ? m1.maxHp : -1;
+  game.asc = { ...computeAscension(meta, false), active: false };
+  game.asc.enemyHp = 1;
+  const m2 = game.spawnEnemy('mote', game.player.x + 50, game.player.y + 80, false);
+  const hpWithout = m2 ? m2.maxHp : -1;
+  if (Math.abs(hpWith / hpWithout - 1.4) > 1e-6) errors.push(`spawnEnemy hp mult wrong: ${hpWith}/${hpWithout}`);
+  if (game.maxEnemies !== 300 + 40) errors.push(`cap add wrong: ${game.maxEnemies}`);
+
+  // ---- cores payout: run finalize multiplies by the tree ----
+  game.asc.coresMult = 2.38; // lv 23 tree
+  game.score = 100000;
+  game.wave = 10;
+  game.bossKills = 2;
+  game.kills = 500;
+  game.runMaxCombo = 0;
+  (game as unknown as { finalizeRun: (won: boolean) => void }).finalizeRun(true);
+  const baseCores = Math.floor(100000 / 1000) + 10 * 3 + 2 * 30;
+  const expected = Math.round(baseCores * 2.38);
+  if (game.coresEarned !== expected) errors.push(`ascension payout wrong: ${game.coresEarned} vs ${expected}`);
+  if (meta.wins < 1) errors.push('finalizeRun did not count the win');
+
+  // ---- costs curve: strictly increasing, round to 5 ----
+  for (const node of ASC_NODES) {
+    let prev = 0;
+    for (let r = 0; r < node.maxRank; r++) {
+      const c = ascCostOf(node, r);
+      if (c <= prev || c % 5 !== 0) errors.push(`cost curve bad for ${node.id} at rank ${r}: ${c}`);
+      prev = c;
+    }
+  }
+
+  // ---- level counter sanity ----
+  if (ascLevelOf(meta) !== 23) errors.push(`ascLevelOf wrong: ${ascLevelOf(meta)}`);
+  return errors;
+}
+
 // ================= main =================
 console.log('VOIDPULSE headless simulation\n');
 
@@ -327,6 +433,10 @@ console.log(e2.length ? e2.map((e) => '  FAIL: ' + e).join('\n') : '  OK');
 console.log('\nTEST 2.5: relics + drone bay (v1.3)');
 const e25 = testRelicsAndDrones();
 console.log(e25.length ? e25.map((e) => '  FAIL: ' + e).join('\n') : '  OK');
+
+console.log('\nTEST 2.6: ascension tree (v1.4)');
+const e26 = testAscension();
+console.log(e26.length ? e26.map((e) => '  FAIL: ' + e).join('\n') : '  OK');
 
 console.log('\nTEST 3: full god run to wave 15 + victory + endless');
 const r3 = runBot(60 * 22, true, true, true);

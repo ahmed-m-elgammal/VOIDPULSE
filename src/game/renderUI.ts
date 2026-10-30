@@ -24,6 +24,17 @@ import {
 import { SKINS, skinOf } from './skins';
 import { MUTATIONS, MUTANT_BONUS_MULT } from './mutations';
 import {
+  ASC_BRANCHES,
+  ASC_NODES,
+  ascCostOf,
+  ascCoresMult,
+  ascLevelOf,
+  ascUnlocked,
+  computeAscension,
+  nodeLocked,
+  nodeRank,
+} from './ascension';
+import {
   ACHIEVEMENTS,
   TIER_COLORS,
   achievementRewardLabel,
@@ -117,6 +128,9 @@ export function drawMenus(r: Renderer, g: Game): void {
     case 'dial':
       drawDial(r, g);
       break;
+    case 'ascension':
+      drawAscension(r, g);
+      break;
     case 'achievements':
       drawAchievements(r, g);
       break;
@@ -184,6 +198,13 @@ function drawTitle(r: Renderer, g: Game): void {
     ['title_dial', 'VOID DIAL — MUTATIONS', 'D'],
     ['title_pass', 'VOIDPASS — SEASON 1', 'B'],
     ['title_market', 'BLACK MARKET', 'N'],
+    [
+      'title_ascension',
+      ascUnlocked(m)
+        ? `ASCENSION — LV ${ascLevelOf(m)} · ×${ascCoresMult(ascLevelOf(m)).toFixed(2)} CORES`
+        : 'ASCENSION — LOCKED',
+      'X',
+    ],
     ['title_perks', 'PERMANENT UPGRADES', 'E'],
     ['title_achievements', `ACHIEVEMENTS — ${unlockedCount(g.meta.data)}/${ACHIEVEMENTS.length}`, 'A'],
     ['title_settings', 'SETTINGS', 'G'],
@@ -207,15 +228,17 @@ function drawTitle(r: Renderer, g: Game): void {
           ? '#ffd166'
           : id === 'title_dial'
             ? '#d96bff'
-            : id === 'title_achievements'
-              ? '#ffe066'
-              : id === 'title_pass'
-                ? '#c9b8ff'
-                : id === 'title_market'
-                  ? '#ffd166'
-                  : id === 'title_settings'
-                    ? '#aebdd4'
-                    : '#9adcff';
+            : id === 'title_ascension'
+              ? '#ff5c8a'
+              : id === 'title_achievements'
+                ? '#ffe066'
+                : id === 'title_pass'
+                  ? '#c9b8ff'
+                  : id === 'title_market'
+                    ? '#ffd166'
+                    : id === 'title_settings'
+                      ? '#aebdd4'
+                      : '#9adcff';
     button(r, g, id, label, mx, my, mw, btnH, accent, 13);
     ctx.font = font(10, 600);
     ctx.textAlign = 'right';
@@ -246,7 +269,7 @@ function drawTitle(r: Renderer, g: Game): void {
   ctx.fillText('WASD move · SPACE dash · weapons auto-fire · [M] mute', W / 2, H - 28);
   ctx.font = font(10, 500);
   ctx.fillStyle = '#3d4a63';
-  ctx.fillText('VOIDPULSE v1.2.0 — SEASON ONE', W / 2, H - 14);
+  ctx.fillText('VOIDPULSE v1.4.0 — SEASON ONE', W / 2, H - 14);
 }
 
 function drawPerks(r: Renderer, g: Game): void {
@@ -400,6 +423,11 @@ function drawHelp(r: Renderer, g: Game): void {
     ['#7dffd4', 'DRONE BAY — BLACK MARKET [N]'],
     ['#ffffff', '  Buy once, deploy every run: MAGNETITE reels shards in · LUMEN zaps hostiles ·'],
     ['#ffffff', '  AEGIS raises a 1-hit barrier at every wave start.'],
+    ['#4de8ff', ''],
+    ['#ff5c8a', 'ASCENSION (NG+) — [X] AFTER YOUR FIRST WIN'],
+    ['#ffffff', '  Every rank bought is permanent: tougher swarm, richer CORES payout (+8% per rank).'],
+    ['#ffffff', '  HUNGER (HP/dmg/bullet speed) · HORDE (density/bursts/cap) · CORRUPTION (elite floor,'],
+    ['#ffffff', '  affixes, boss HP). DAILY BREACH stays ascension-free. The void remembers.'],
   ];
   let y = py + 66;
   ctx.font = font(11, 600);
@@ -604,6 +632,197 @@ function drawDial(r: Renderer, g: Game): void {
   button(r, g, 'dial_back', 'BACK [ESC]', px, y + 56, pw, 40, '#9adcff');
 }
 
+// ================= ASCENSION (v1.4 — NG+ tree) =================
+
+function drawAscension(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.86);
+  const m = g.meta.data;
+  const t = r.t;
+
+  // ambient corruption glow
+  ctx.globalCompositeOperation = 'lighter';
+  r.drawGlow(W / 2, H * 0.42, 300 + Math.sin(t * 1.1) * 18, '#3a1030', 0.5);
+  ctx.globalCompositeOperation = 'source-over';
+
+  const unlocked = ascUnlocked(m);
+  const lv = ascLevelOf(m);
+  const mult = ascCoresMult(lv);
+
+  // ---- header ----
+  ctx.textAlign = 'center';
+  ctx.font = font(26, 800);
+  ctx.fillStyle = '#ff5c8a';
+  ctx.fillText('ASCENSION', W / 2, 44);
+  ctx.font = font(11, 600);
+  ctx.fillStyle = '#8fa3c0';
+  ctx.fillText('new game+ — every rank is permanent: the run twists harder, the void pays deeper', W / 2, 64);
+  ctx.font = font(13, 800);
+  ctx.fillStyle = '#ff5c8a';
+  ctx.fillText(`LV ${lv}   ·   ×${mult.toFixed(2)} CORES`, W / 2, 86);
+  ctx.textAlign = 'right';
+  ctx.font = font(12, 700);
+  ctx.fillStyle = '#6dff8c';
+  ctx.fillText(`◆ ${m.cores}`, W - 26, 44);
+
+  // ---- geometry ----
+  const sideM = 30;
+  const gap = 16;
+  const colW = Math.min(368, (W - sideM * 2 - gap * 2) / 3);
+  const treeW = colW * 3 + gap * 2;
+  const treeX = (W - treeW) / 2;
+  const nodeH = H < 780 ? 106 : 116;
+  const nodeGap = 12;
+  const tierTop = 128; // tier-3 node y (branches grow upward from the root)
+
+  // column headers
+  for (let b = 0; b < 3; b++) {
+    const br = ASC_BRANCHES[b];
+    const cx = treeX + b * (colW + gap);
+    ctx.textAlign = 'center';
+    ctx.font = font(13, 800);
+    ctx.fillStyle = br.color;
+    ctx.fillText(br.name, cx + colW / 2, 112);
+  }
+
+  const nodeBox = (idx: number): { x: number; y: number } => {
+    const node = ASC_NODES[idx];
+    const b = ASC_BRANCHES.findIndex((br) => br.id === node.branch);
+    const tier = node.tier;
+    return { x: treeX + b * (colW + gap), y: tierTop + (3 - tier) * (nodeH + nodeGap) };
+  };
+
+  // ---- connectors (drawn under the panels) ----
+  ctx.strokeStyle = 'rgba(255,92,138,0.22)';
+  ctx.lineWidth = 2;
+  const rootY = tierTop + 3 * nodeH + 2 * nodeGap + 26;
+  ctx.beginPath();
+  // root bus -> each tier-1 node
+  for (let b = 0; b < 3; b++) {
+    const cx = treeX + b * (colW + gap) + colW / 2;
+    const by = tierTop + 3 * nodeH + 2 * nodeGap;
+    ctx.moveTo(W / 2, rootY - 14);
+    ctx.lineTo(cx, by + 6);
+  }
+  // within-column tier chains
+  for (let i = 0; i < ASC_NODES.length; i++) {
+    const node = ASC_NODES[i];
+    if (node.tier >= 3) continue;
+    const { x, y } = nodeBox(i);
+    const cx = x + colW / 2;
+    ctx.moveTo(cx, y - nodeGap + 2);
+    ctx.lineTo(cx, y + 4);
+  }
+  ctx.stroke();
+
+  // ---- node panels ----
+  for (let i = 0; i < ASC_NODES.length; i++) {
+    const node = ASC_NODES[i];
+    const { x, y } = nodeBox(i);
+    const rank = nodeRank(m, node.id);
+    const lock = nodeLocked(m, node);
+    const selected = g.ascIndex === i;
+    const check = unlocked && !lock.locked && rank < node.maxRank;
+    const cost = ascCostOf(node, rank);
+    const afford = m.cores >= cost;
+
+    ctx.globalAlpha = lock.locked ? 0.5 : 1;
+    panel(r, x, y, colW, nodeH, selected ? node.color : 'rgba(90,160,255,0.25)');
+    if (selected) {
+      ctx.strokeStyle = node.color;
+      ctx.lineWidth = 2.2;
+      ctx.strokeRect(x + 1.5, y + 1.5, colW - 3, nodeH - 3);
+    }
+
+    // name row: glyph + name + rank pips
+    ctx.textAlign = 'left';
+    ctx.font = font(13, 800);
+    ctx.fillStyle = node.color;
+    ctx.fillText(`${node.glyph} ${node.name}`, x + 14, y + 22);
+    const pipW = 5;
+    const pipGap = 3.5;
+    for (let p = 0; p < node.maxRank; p++) {
+      const px2 = x + colW - 14 - (node.maxRank - p) * (pipW + pipGap);
+      ctx.fillStyle = p < rank ? node.color : 'rgba(120,140,170,0.35)';
+      ctx.fillRect(px2, y + 14, pipW, 9);
+    }
+
+    ctx.font = font(9.5, 500);
+    ctx.fillStyle = '#8fa3c0';
+    ctx.fillText(node.desc, x + 14, y + 40);
+
+    ctx.font = font(10.5, 700);
+    if (rank > 0) {
+      ctx.fillStyle = '#6dff8c';
+      ctx.fillText(`NOW: ${node.effect(rank)}`, x + 14, y + 60);
+    } else {
+      ctx.fillStyle = '#5a6a85';
+      ctx.fillText('NOT BOUGHT', x + 14, y + 60);
+    }
+
+    // next-rank row
+    ctx.textAlign = 'left';
+    ctx.font = font(10.5, 700);
+    if (lock.locked) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#8fa3c0';
+      ctx.fillText(`LOCKED — ${lock.reason}`, x + colW / 2, y + 86);
+    } else if (rank >= node.maxRank) {
+      ctx.fillStyle = '#ffd94d';
+      ctx.fillText('MAX RANK — the void is satisfied', x + 14, y + 86);
+    } else {
+      ctx.fillStyle = '#aebdd4';
+      ctx.fillText(`NEXT: ${node.effect(rank + 1)}`, x + 14, y + 86);
+      ctx.font = font(11, 800);
+      ctx.textAlign = 'right';
+      if (check) {
+        ctx.fillStyle = afford ? '#6dff8c' : '#ff5c5c';
+        ctx.fillText(`BUY ${cost}◆`, x + colW - 14, y + 106);
+      } else {
+        ctx.fillStyle = '#5a6a85';
+        ctx.fillText(`COST ${cost}◆`, x + colW - 14, y + 106);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    reg(r, g, `asc_buy_${node.id}`, x, y, colW, nodeH);
+  }
+
+  // ---- root panel: THE DEEP CORE ----
+  const rootH = 74;
+  panel(r, treeX, rootY - 26, treeW, rootH, 'rgba(255,92,138,0.4)');
+  ctx.textAlign = 'left';
+  ctx.font = font(12, 800);
+  ctx.fillStyle = '#ff5c8a';
+  ctx.fillText(`◈ THE DEEP CORE — STABILIZED ×${m.wins}`, treeX + 16, rootY - 4);
+  if (unlocked) {
+    const a = computeAscension(m, false);
+    ctx.font = font(10, 700);
+    ctx.fillStyle = '#aebdd4';
+    ctx.fillText(
+      `NEXT RUN — HP ×${a.enemyHp.toFixed(2)} · DMG ×${a.enemyDmg.toFixed(2)} · DENSITY ×${a.density.toFixed(2)} · ELITES ≥ WAVE ${a.eliteFloor} · BOSS HP ×${a.bossHpMult.toFixed(2)}`,
+      treeX + 16,
+      rootY + 16
+    );
+    ctx.font = font(10, 700);
+    ctx.fillStyle = mult > 1 ? '#6dff8c' : '#5a6a85';
+    ctx.fillText(`DAILY BREACH STAYS CLEAN (NO ASCENSION) · PAYOUT ×${a.coresMult.toFixed(2)} CORES`, treeX + 16, rootY + 34);
+  } else {
+    ctx.font = font(10.5, 600);
+    ctx.fillStyle = '#8fa3c0';
+    ctx.fillText('The core still sleeps. Stabilize it once — survive wave 15 — and the tree opens.', treeX + 16, rootY + 20);
+  }
+
+  // footer
+  ctx.textAlign = 'center';
+  ctx.font = font(10, 500);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('↑/↓ climb tiers · ←/→ switch branches · ENTER/click a node to buy a rank · ranks are permanent', W / 2, rootY + 66);
+  button(r, g, 'asc_back', 'BACK [ESC]', treeX, rootY + 78, treeW, 40, '#9adcff');
+}
+
 // ================= ACHIEVEMENTS (v1.2) =================
 
 const ACH_VISIBLE = 8;
@@ -731,6 +950,13 @@ function drawRunEndExtras(r: Renderer, g: Game, x: number, y: number, w: number)
       ctx.fillText(`RELIC — ${rd.name} · ${rd.desc}`, x, cy);
       cy += 17;
     }
+  }
+  if (g.asc.active) {
+    ctx.textAlign = 'left';
+    ctx.font = font(11, 800);
+    ctx.fillStyle = '#ff5c8a';
+    ctx.fillText(`ASCENSION LV ${g.asc.level}  ·  ×${g.asc.coresMult.toFixed(2)} CORES PAID OUT`, x, cy);
+    cy += 17;
   }
   if (g.newAchievements.length > 0) {
     ctx.textAlign = 'left';
@@ -897,6 +1123,11 @@ function drawVictory(r: Renderer, g: Game): void {
   ctx.fillText('The Null Sovereign is destroyed. The void recedes… for now.', W / 2, py + 74);
   ctx.fillStyle = '#6dff8c';
   ctx.fillText('★ ENDLESS MODE UNLOCKED ★', W / 2, py + 94);
+  // v1.4 — first victory opens the ascension tree
+  if (g.meta.data.wins === 1) {
+    ctx.fillStyle = '#ff5c8a';
+    ctx.fillText('★ ASCENSION CONSOLE UNLOCKED — PRESS [X] AT TITLE ★', W / 2, py + 112);
+  }
 
   let y = py + 122;
   const rows: [string, string, string][] = [

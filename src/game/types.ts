@@ -9,6 +9,7 @@ export type GameState =
   | 'settings'
   | 'dial'
   | 'achievements'
+  | 'ascension'
   | 'playing'
   | 'levelup'
   | 'relicpick'
@@ -549,7 +550,7 @@ export interface DailyRecord {
 }
 
 export interface MetaSave {
-  saveVersion: 2;
+  saveVersion: 3;
   seasonId: number;
   cores: number;
   prisms: number;
@@ -590,6 +591,8 @@ export interface MetaSave {
   // v1.3 — drone bay (bought once, one deployed per run)
   companionsOwned: string[];
   companionEquipped: string;
+  // v1.4 — ASCENSION (NG+): nodeId -> rank bought, permanent
+  ascension: Record<string, number>;
   // accessibility & audio settings
   settings: Settings;
 }
