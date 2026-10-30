@@ -3,10 +3,12 @@
 import type {
   Afterimage,
   Arc,
+  Beam,
   BossState,
   Bullet,
   ButtonRect,
   CardOption,
+  CompanionState,
   Enemy,
   EnemyDef,
   EBullet,
@@ -17,6 +19,7 @@ import type {
   InputState,
   Particle,
   Player,
+  RelicDef,
   Settings,
   Shock,
   Stats,
@@ -36,7 +39,7 @@ import {
 } from './content';
 import { AudioEngine } from './audio';
 import { loadMeta, saveMeta } from './save';
-import { Pool, makeRng, sweepDead } from './utils';
+import { Pool, makeRng, sweepDead, shuffle, TAU } from './utils';
 import { applyCard, generateCards } from './cards';
 import { addHeat, damagePlayer as dmgPlayer, updatePlayer } from './player';
 import {
@@ -69,6 +72,8 @@ import { skinOf } from './skins';
 import { MUTATIONS, MUTANT_BONUS_MULT, isMutation, SWARM_SCORE_MULT } from './mutations';
 import { evaluateAchievements, ACHIEVEMENTS, type AchievementUnlock } from './achievements';
 import { DAILY_COMPLETION_PRISMS, dailyMutationsFor, dailySeedFor, todayKey } from './daily';
+import { RELICS, relicOf } from './relics';
+import { companionOf, updateCompanion } from './companions';
 
 interface DelayedCall {
   t: number;
@@ -135,6 +140,9 @@ export class Game {
     x: 0, y: 0, r: 8, maxR: 100, speed: 600, life: 0.25, maxLife: 0.25, color: '#4de8ff', width: 4, dmg: 0, knock: 0,
     hitIds: new Set<number>(), dead: false,
   }));
+  beamPool = new Pool<Beam>(() => ({
+    x: 0, y: 0, angle: 0, len: 100, life: 0.2, maxLife: 0.2, color: '#e8ff6d', width: 9, dead: false,
+  }));
   enemyPool = new Pool<Enemy>(() => ({
     eid: 0, def: null as unknown as EnemyDef, x: 0, y: 0, vx: 0, vy: 0, hp: 1, maxHp: 1, radius: 10, speed: 60,
     damage: 5, xp: 1, score: 1, elite: false, mods: [] as EliteMod[], flash: 0, t: 0, shootTimer: 999, phase: 0, slow: 0, slowT: 0,
@@ -160,6 +168,15 @@ export class Game {
   // v1.2 — elite affix tracking + affix-driven player states
   elitesAlive = 0;
   playerChillT = 0; // frostAura chill remaining (refreshed while inside)
+
+  // v1.3 — RELICS (wave-3 bargain) + COMPANIONS (market drones)
+  relic: string | null = null;
+  relicOffered = false;
+  relicChoices: RelicDef[] = [];
+  relicJamT = 0; // OVERCLOCK CORE: jam time remaining
+  jamCycleT = 0; // OVERCLOCK CORE: seconds toward the next jam
+  companion: CompanionState | null = null;
+  beams: Beam[] = [];
 
   // v1.2 — run configuration (VOID DIAL mutations / daily breach)
   runMutations: string[] = [];
@@ -195,6 +212,7 @@ export class Game {
   bossActive = false;
   pendingBoss: { idx: number; hpMult: number } | null = null;
   rageT = 0;
+  decayAnnounced = false; // v1.3 anti-stall valve banner flag
   dmgScale = 1;
   maxEnemies = MAX_ENEMIES; // SWARM PROTOCOL raises this for the run
 
@@ -434,6 +452,18 @@ export class Game {
     this.pendingCards = false;
     this.zoomKick = 0;
     this.cardAnimT = 0;
+    // v1.3 run resets
+    this.relic = null;
+    this.relicOffered = false;
+    this.relicChoices = [];
+    this.relicJamT = 0;
+    this.jamCycleT = 0;
+    this.beams.length = 0;
+    const droneId = this.meta.data.companionEquipped;
+    this.companion =
+      droneId && companionOf(droneId)
+        ? { id: droneId, x: this.worldW / 2, y: this.worldH / 2 - 60, vx: 0, vy: 0, angle: Math.random() * TAU, timer: 1 }
+        : null;
     this.runDashKills = 0;
     this.runElites = 0;
     this.runHeals = 0;
@@ -655,6 +685,11 @@ export class Game {
     sweepDead(this.enemies, (e) => this.enemyPool.release(e)); // bullets/shocks may have killed enemies
     updateGems(this, dt);
     updateParticles(this, dt);
+    updateCompanion(this, dt);
+
+    // beams fade fast (rail slugs)
+    for (const bm of this.beams) bm.life -= dt;
+    sweepDead(this.beams, (b) => this.beamPool.release(b));
 
     // music intensity follows the fight
     const target =
@@ -843,6 +878,10 @@ export class Game {
     if (e.dead) return;
     e.dead = true;
     this.kills++;
+    // VAMPIRE SIGIL: kills are food. One hull per body.
+    if (this.relic === 'vampire' && this.player.hp > 0) {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
+    }
     if (e.elite) this.elitesAlive--;
     // combo: consecutive kills inside the 2s window chain up (pitch + banner + payout)
     if (this.killChainT > 0) this.combo++;
@@ -1112,6 +1151,70 @@ export class Game {
     this.audio.sfx('reroll');
   }
 
+  // ---------------- v1.3 relics & drones ----------------
+
+  /** Wave 3 bargain: offer all three relics in random order. */
+  openRelicPick(): void {
+    if (this.relic || this.state === 'relicpick') return;
+    this.relicChoices = shuffle([...RELICS], Math.random);
+    this.state = 'relicpick';
+    this.audio.sfx('levelup');
+  }
+
+  chooseRelic(i: number): void {
+    if (this.state !== 'relicpick') return;
+    const rd = this.relicChoices[i];
+    if (!rd) return;
+    this.relic = rd.id;
+    this.relicChoices = [];
+    this.state = 'playing';
+    if (rd.id === 'overclock') this.recomputeStats();
+    this.audio.sfx('relic');
+    this.addText(this.player.x, this.player.y - 60, `RELIC — ${rd.name}`, rd.color, 18, true);
+    this.addText(this.player.x, this.player.y - 40, rd.trade, '#9aa8c0', 11);
+    this.flashScreen(rd.color, 0.3);
+    this.shake(4);
+    this.spawnShock({
+      x: this.player.x,
+      y: this.player.y,
+      r: 10,
+      maxR: 200,
+      speed: 560,
+      life: 0.3,
+      maxLife: 0.3,
+      color: rd.color,
+      width: 4,
+      dmg: 0,
+      knock: 120,
+    });
+    this.spawnParticleBurst(this.player.x, this.player.y, rd.color, 22, 240, 3);
+    // levels banked during the bargain still pay out
+    if (this.pendingLevels > 0) this.openLevelUp();
+  }
+
+  buyCompanion(id: string): void {
+    const d = companionOf(id);
+    if (!d || this.meta.data.companionsOwned.includes(id)) return;
+    const bal = d.currency === 'cores' ? this.meta.data.cores : this.meta.data.prisms;
+    if (bal < d.price) {
+      this.audio.sfx('error');
+      return;
+    }
+    if (d.currency === 'cores') this.meta.data.cores -= d.price;
+    else this.meta.data.prisms -= d.price;
+    this.meta.data.companionsOwned.push(id);
+    this.meta.data.companionEquipped = id;
+    this.meta.save();
+    this.audio.sfx('buy');
+  }
+
+  equipCompanion(id: string): void {
+    if (!companionOf(id) || !this.meta.data.companionsOwned.includes(id)) return;
+    this.meta.data.companionEquipped = id;
+    this.meta.save();
+    this.audio.sfx('select');
+  }
+
   recomputeStats(): void {
     const p = this.player;
     const oldMax = p.maxHp;
@@ -1127,6 +1230,8 @@ export class Game {
     );
     if (this.activeBoosters['xpAmp']) p.stats.xpMult *= 1.3;
     this.applyMutationStats(p.stats);
+    // OVERCLOCK CORE relic: +25% fire rate, paid for in jams (see fireWeapons)
+    if (this.relic === 'overclock') p.stats.fireRateMult *= 1.25;
     let newMax = PLAYER_BASE.hp + this.meta.perkTiers('guardCore') * 15 + (p.passives['vitality'] ?? 0) * 20;
     if (this.runMutations.includes('glassHull')) newMax = Math.round(newMax * 0.6);
     if (newMax !== oldMax) {
@@ -1386,6 +1491,21 @@ export class Game {
     this.arcs.push(a);
   }
 
+  spawnBeam(o: Partial<Beam>): void {
+    const b = this.beamPool.acquire();
+    b.x = 0;
+    b.y = 0;
+    b.angle = 0;
+    b.len = 100;
+    b.life = 0.2;
+    b.maxLife = 0.2;
+    b.color = '#e8ff6d';
+    b.width = 9;
+    b.dead = false;
+    Object.assign(b, o);
+    this.beams.push(b);
+  }
+
   shake(amount: number): void {
     const s = this.settings;
     if (s.reducedMotion) return;
@@ -1476,6 +1596,19 @@ export class Game {
     if (id.startsWith('market_tab_')) {
       this.marketTab = parseInt(id.slice(11), 10) || 0;
       this.audio.sfx('uiMove');
+      return;
+    }
+    if (id.startsWith('relic_')) {
+      const i = parseInt(id.slice(6), 10);
+      this.chooseRelic(i);
+      return;
+    }
+    if (id.startsWith('drone_buy_')) {
+      this.buyCompanion(id.slice(10));
+      return;
+    }
+    if (id.startsWith('drone_equip_')) {
+      this.equipCompanion(id.slice(12));
       return;
     }
     if (id.startsWith('tier_select_')) {
@@ -1729,6 +1862,12 @@ export class Game {
         else if (code === 'KeyR') this.rerollCards();
         break;
       }
+      case 'relicpick': {
+        if (code === 'Digit1' || code === 'Numpad1') this.chooseRelic(0);
+        else if (code === 'Digit2' || code === 'Numpad2') this.chooseRelic(1);
+        else if (code === 'Digit3' || code === 'Numpad3') this.chooseRelic(2);
+        break;
+      }
       case 'paused': {
         if (code === 'Escape' || code === 'KeyP') this.togglePause();
         else if (code === 'KeyQ') this.quitToTitle();
@@ -1772,10 +1911,10 @@ export class Game {
           this.state = 'title';
           this.menuIndex = 0;
         } else if (code === 'ArrowLeft' || code === 'KeyA') {
-          this.marketTab = (this.marketTab + 2) % 3;
+          this.marketTab = (this.marketTab + 3) % 4;
           this.audio.sfx('uiMove');
         } else if (code === 'ArrowRight' || code === 'KeyD') {
-          this.marketTab = (this.marketTab + 1) % 3;
+          this.marketTab = (this.marketTab + 1) % 4;
           this.audio.sfx('uiMove');
         }
         break;
@@ -1847,7 +1986,17 @@ export class Game {
         state: this.state,
         weapons: this.player.weapons.map((w) => `${w.id}:${w.level}`),
         passives: { ...this.player.passives },
+        relic: this.relic,
+        companion: this.companion?.id ?? null,
       }),
+      relic: (id: string) => {
+        this.relic = relicOf(id)?.id ?? null;
+        if (this.relic === 'overclock') this.recomputeStats();
+      },
+      drone: (id: string) => {
+        if (!companionOf(id)) return;
+        this.companion = { id, x: this.player.x, y: this.player.y - 40, vx: 0, vy: 0, angle: Math.random() * TAU, timer: 0.5 };
+      },
     };
   }
 }

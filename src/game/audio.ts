@@ -314,6 +314,23 @@ export class AudioEngine {
       case 'error':
         this.tone({ type: 'square', f0: 220, f1: 160, dur: 0.16, vol: 0.07 });
         break;
+      // v1.3 — rail / tether / mirror / relic
+      case 'rail':
+        this.tone({ type: 'sawtooth', f0: 2200, f1: 140, dur: 0.22, vol: 0.12 });
+        this.noise({ dur: 0.16, vol: 0.07, f0: 5000, f1: 900, q: 2 });
+        break;
+      case 'hook':
+        this.tone({ type: 'square', f0: 260, f1: 720, dur: 0.12, vol: 0.07 });
+        this.noise({ dur: 0.08, vol: 0.04, f0: 1600, f1: 500 });
+        break;
+      case 'swing':
+        this.noise({ dur: 0.12, vol: 0.06, f0: 3200, f1: 700, q: 1.6 });
+        break;
+      case 'relic':
+        [330, 262, 392, 523].forEach((f, i) =>
+          this.tone({ type: 'triangle', f0: f, dur: 0.24, vol: 0.09, delay: i * 0.09 })
+        );
+        break;
       default:
         break;
     }

@@ -2,9 +2,12 @@
 
 import type { Renderer } from './render';
 import type { Game } from './game';
+import type { RelicDef } from './types';
+import { COMPANIONS } from './companions';
 import { META_PERKS, PASSIVES, WEAPONS } from './content';
 import { fmtScore, fmtTime } from './utils';
 import type { ButtonRect, CardOption } from './types';
+import { relicOf } from './relics';
 import {
   BOOSTERS,
   CONTRACT_POOL,
@@ -388,6 +391,15 @@ function drawHelp(r: Renderer, g: Game): void {
     ['#ffffff', '    BURST · SWIFT · SHIELD · THORNS (punishes dashes) · VAMPIRIC (heals allies)'],
     ['#ffffff', '    FROST AURA (chills you) · EXPLOSIVE (telegraphed death blast) · MIRROR (reflects bullets)'],
     ['#ffffff', '  More affixes = more payout. In ENDLESS, a fourth titan hunts you: THE LEVIATHAN.'],
+    ['#4de8ff', ''],
+    ['#ff5c8a', 'RELICS — THE WAVE-3 BARGAIN'],
+    ['#ffffff', '  At wave 3 the void offers a relic. Pick your poison:'],
+    ['#ffffff', '  VAMPIRE SIGIL kills heal 1 hull · OVERCLOCK CORE +25% fire rate, jams sometimes ·'],
+    ['#ffffff', '  VOID PACT +1 module slot, one fewer weapon slot. No refunds, no walking away.'],
+    ['#7dffd4', ''],
+    ['#7dffd4', 'DRONE BAY — BLACK MARKET [N]'],
+    ['#ffffff', '  Buy once, deploy every run: MAGNETITE reels shards in · LUMEN zaps hostiles ·'],
+    ['#ffffff', '  AEGIS raises a 1-hit barrier at every wave start.'],
   ];
   let y = py + 66;
   ctx.font = font(11, 600);
@@ -709,6 +721,16 @@ function drawRunEndExtras(r: Renderer, g: Game, x: number, y: number, w: number)
     ctx.fillStyle = '#ff9a3d';
     ctx.fillText(`BEST CHAIN ×${g.runMaxCombo}  ·  +${pct}% CORES`, x, cy);
     cy += 17;
+  }
+  if (g.relic) {
+    const rd = relicOf(g.relic);
+    if (rd) {
+      ctx.textAlign = 'left';
+      ctx.font = font(11, 800);
+      ctx.fillStyle = rd.color;
+      ctx.fillText(`RELIC — ${rd.name} · ${rd.desc}`, x, cy);
+      cy += 17;
+    }
   }
   if (g.newAchievements.length > 0) {
     ctx.textAlign = 'left';
@@ -1140,10 +1162,10 @@ function drawMarket(r: Renderer, g: Game): void {
   ctx.fillText(`${m.prisms} \u25C7`, W - 24, 54);
 
   // tabs
-  const tabs = ['SHIPWRIGHT', 'SUPPLY DEPOT', 'PRISM EXCHANGE'];
-  const tabW = 200;
-  let tx = (W - tabW * 3 - 16) / 2;
-  for (let i = 0; i < 3; i++) {
+  const tabs = ['SHIPWRIGHT', 'DRONE BAY', 'SUPPLY DEPOT', 'PRISM EXCHANGE'];
+  const tabW = Math.min(180, (W - 48 - 3 * 8) / 4);
+  let tx = (W - tabW * 4 - 24) / 2;
+  for (let i = 0; i < 4; i++) {
     const active = g.marketTab === i;
     button(r, g, `market_tab_${i}`, tabs[i], tx, 84, tabW, 34, active ? '#ffd166' : '#8fa3c0', 12);
     tx += tabW + 8;
@@ -1193,6 +1215,54 @@ function drawMarket(r: Renderer, g: Game): void {
       }
     }
   } else if (g.marketTab === 1) {
+    // ---- drone bay (v1.3 companions) ----
+    const listW = Math.min(760, W - 80);
+    const lx = (W - listW) / 2;
+    let ly = contentY + 6;
+    ctx.textAlign = 'center';
+    ctx.font = font(10.5, 500);
+    ctx.fillStyle = '#8fa3c0';
+    ctx.fillText('Buy once — one drone deploys with you every run. They cannot be targeted.', W / 2, contentY - 6);
+    for (const d of COMPANIONS) {
+      const owned = m.companionsOwned.includes(d.id);
+      const equipped = m.companionEquipped === d.id;
+      const afford = d.currency === 'cores' ? m.cores >= d.price : m.prisms >= d.price;
+      panel(r, lx, ly, listW, 74, equipped ? 'rgba(255,217,77,0.7)' : afford ? 'rgba(90,160,255,0.45)' : 'rgba(90,110,150,0.28)');
+      ctx.textAlign = 'left';
+      ctx.font = font(14, 800);
+      ctx.fillStyle = d.color;
+      ctx.fillText(d.name, lx + 18, ly + 26);
+      ctx.font = font(10.5, 500);
+      ctx.fillStyle = '#aebdd4';
+      ctx.fillText(d.desc, lx + 18, ly + 45);
+      ctx.font = font(10, 700);
+      ctx.fillStyle = owned ? '#6dff8c' : '#5a6a85';
+      ctx.fillText(owned ? 'OWNED' : `${d.price} ${d.currency === 'cores' ? '\u25C6' : '\u25C7'}`, lx + 18, ly + 62);
+      if (equipped) {
+        ctx.font = font(11, 800);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffd94d';
+        ctx.fillText('\u2605 DEPLOYED', lx + listW - 85, ly + 42);
+        reg(r, g, `drone_equip_${d.id}`, lx + listW - 150, ly + 20, 130, 34);
+      } else if (owned) {
+        button(r, g, `drone_equip_${d.id}`, 'DEPLOY', lx + listW - 150, ly + 20, 130, 34, '#6dff8c', 12);
+      } else {
+        button(
+          r,
+          g,
+          `drone_buy_${d.id}`,
+          `BUY — ${d.price} ${d.currency === 'cores' ? '\u25C6' : '\u25C7'}`,
+          lx + listW - 150,
+          ly + 20,
+          130,
+          34,
+          afford ? '#ffd166' : '#8a97b0',
+          11
+        );
+      }
+      ly += 86;
+    }
+  } else if (g.marketTab === 2) {
     // ---- boosters ----
     const listW = Math.min(760, W - 80);
     const lx = (W - listW) / 2;
@@ -1388,4 +1458,94 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number,
   }
   if (cur) lines.push(cur);
   return lines;
+}
+
+// ================= RELIC PICK (v1.3 — wave 3 bargain) =================
+
+export function drawRelicPick(r: Renderer, g: Game): void {
+  const ctx = r.ctx;
+  const W = r.viewW;
+  const H = r.viewH;
+  dim(r, 0.78);
+
+  ctx.textAlign = 'center';
+  ctx.font = font(30, 800);
+  ctx.fillStyle = '#ff5c8a';
+  ctx.fillText('THE VOID OFFERS A BARGAIN', W / 2, H * 0.17);
+  ctx.font = font(12, 600);
+  ctx.fillStyle = '#8fa3c0';
+  ctx.fillText('WAVE 3 — bind one relic to this run. Every gift has a price.', W / 2, H * 0.17 + 26);
+
+  const cardW = Math.min(320, (W - 100) / 3 - 14);
+  const cardH = Math.min(300, H * 0.46);
+  const gap = 24;
+  const totalW = cardW * 3 + gap * 2;
+  const x0 = (W - totalW) / 2;
+  const y0 = H * 0.25;
+
+  for (let i = 0; i < g.relicChoices.length; i++) {
+    const rd: RelicDef = g.relicChoices[i];
+    const x = x0 + i * (cardW + gap);
+    const b = reg(r, g, `relic_${i}`, x, y0, cardW, cardH);
+    const hover = b.hover;
+    const lift = hover ? -6 : 0;
+
+    ctx.save();
+    ctx.translate(0, lift);
+    if (hover) {
+      ctx.globalCompositeOperation = 'lighter';
+      r.drawGlow(x + cardW / 2, y0 + cardH / 2, cardW * 0.72, rd.color, 0.13);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    panel(r, x, y0, cardW, cardH, hover ? rd.color : 'rgba(255,92,138,0.5)');
+
+    // header strip
+    ctx.fillStyle = 'rgba(30,14,26,0.85)';
+    ctx.fillRect(x + 1, y0 + 1, cardW - 2, 28);
+    ctx.font = font(10, 700);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = rd.color;
+    ctx.fillText('RELIC', x + 14, y0 + 19);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#5a6a85';
+    ctx.fillText(`[${i + 1}]`, x + cardW - 14, y0 + 19);
+
+    // glyph
+    ctx.globalCompositeOperation = 'lighter';
+    r.drawGlow(x + cardW / 2, y0 + 86, 42, rd.color, 0.5);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.textAlign = 'center';
+    ctx.font = font(34, 800);
+    ctx.fillStyle = rd.color;
+    ctx.fillText(rd.glyph, x + cardW / 2, y0 + 98);
+
+    // name
+    ctx.font = font(15, 800);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(rd.name, x + cardW / 2, y0 + 136);
+
+    // benefit
+    ctx.font = font(11.5, 600);
+    ctx.fillStyle = '#a8ffb8';
+    let dy = y0 + 166;
+    for (const line of wrapText(ctx, rd.desc, cardW - 32, 11.5, 600).slice(0, 3)) {
+      ctx.fillText(line, x + cardW / 2, dy);
+      dy += 15;
+    }
+
+    // tradeoff
+    dy += 6;
+    ctx.font = font(11, 700);
+    ctx.fillStyle = '#ff9a8a';
+    for (const line of wrapText(ctx, `COST: ${rd.trade}`, cardW - 32, 11, 700).slice(0, 3)) {
+      ctx.fillText(line, x + cardW / 2, dy);
+      dy += 14;
+    }
+
+    ctx.restore();
+  }
+
+  ctx.font = font(11, 600);
+  ctx.fillStyle = '#5a6a85';
+  ctx.fillText('press 1 / 2 / 3 — or click a card', W / 2, y0 + cardH + 42);
 }

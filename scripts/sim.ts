@@ -11,7 +11,10 @@
 import { Game } from '../src/game/game';
 import { AudioEngine } from '../src/game/audio';
 import { WEAPONS, EVO_MAP } from '../src/game/content';
+import { generateCards } from '../src/game/cards';
 import type { CardOption, GameState } from '../src/game/types';
+import { COMPANIONS } from '../src/game/companions';
+import { RELICS } from '../src/game/relics';
 
 const STEP = 1 / 60;
 
@@ -114,6 +117,12 @@ function runBot(maxSeconds: number, godMode: boolean, playUntilEnd: boolean, ver
       });
       game.chooseCard(best);
       if (game.state === 'levelup') errors.push('still in levelup after choosing');
+    } else if (game.state === 'relicpick') {
+      // wave-3 bargain: grab a random relic and move on
+      const n = game.relicChoices.length;
+      if (n === 0) errors.push('relicpick with no choices');
+      else game.chooseRelic(Math.floor(Math.random() * n));
+      if (game.state === 'relicpick') errors.push('still in relicpick after choosing');
     } else if (game.state === 'gameover') {
       break;
     } else if (game.state === 'victory') {
@@ -167,7 +176,8 @@ function testEvolutionAndMaxSystems(): string[] {
     .filter((w) => !w.isEvolved)
     .map((w) => ({ id: w.id, level: w.maxLevel, timer: 0, angle: 0, t: 0 }));
   for (const [base, evo] of Object.entries(EVO_MAP)) {
-    p.passives[evo.req] = 3;
+    if (evo.req) p.passives[evo.req] = 3;
+    // dual paths (glacierFan) rely on the partner weapon being in the maxed set
     const w = p.weapons.find((x) => x.id === base);
     if (!w) {
       errors.push(`missing base weapon ${base}`);
@@ -195,9 +205,86 @@ function testEvolutionAndMaxSystems(): string[] {
   game.state = 'playing';
   for (let i = 0; i < 20 * 60; i++) {
     if ((game.state as GameState) === 'levelup') game.chooseCard(0);
+    else if ((game.state as GameState) === 'relicpick') game.chooseRelic(0);
     game.update(STEP);
   }
   if (!Number.isFinite(game.score)) errors.push('score NaN in max-systems test');
+  return errors;
+}
+
+function testRelicsAndDrones(): string[] {
+  const errors: string[] = [];
+  const game = new Game(new AudioEngine());
+  game.meta.data.cores = 100000;
+  game.meta.data.prisms = 10000;
+
+  // ---- drone bay: buy + equip through the real market actions ----
+  for (const d of COMPANIONS) {
+    game.buyCompanion(d.id);
+    if (!game.meta.data.companionsOwned.includes(d.id)) errors.push(`failed to buy drone ${d.id}`);
+  }
+  if (game.meta.data.cores < 0 || game.meta.data.prisms < 0) errors.push('cores/prisms went negative buying drones');
+  game.equipCompanion('lumen');
+  game.startRun();
+  if (!game.companion || game.companion.id !== 'lumen') errors.push('equipped drone did not deploy');
+
+  // ---- relic flow: wave-3 bargain via the real state machine ----
+  game.openRelicPick();
+  if (game.state !== 'relicpick') errors.push('relicpick state not entered');
+  if (game.relicChoices.length !== RELICS.length) errors.push('relic offer count wrong');
+  game.chooseRelic(0);
+  if (game.state !== 'playing') errors.push('relic choice did not resume play');
+  if (!game.relic) errors.push('no relic bound after choice');
+
+  // ---- VAMPIRE SIGIL: kills heal ----
+  game.relic = 'vampire';
+  game.player.hp = 50;
+  const mote = game.spawnEnemy('mote', game.player.x + 60, game.player.y, false);
+  if (mote) {
+    game.damageEnemy(mote, 9999, false, 'test');
+    if (game.player.hp !== 51) errors.push(`vampire heal wrong: ${game.player.hp}`);
+  } else errors.push('failed to spawn test mote');
+
+  // ---- OVERCLOCK CORE: fire rate bonus + jam fields exist ----
+  game.relic = 'overclock';
+  game.recomputeStats();
+  if (game.player.stats.fireRateMult < 1.25) errors.push(`overclock fire rate not applied: ${game.player.stats.fireRateMult}`);
+  game.relicJamT = 1;
+  game.update(1 / 60);
+  if (game.relicJamT >= 1) errors.push('jam timer does not tick down');
+
+  // ---- VOID PACT: tighter weapon bay in the card draft ----
+  game.relic = 'voidPact';
+  game.player.weapons = [
+    { id: 'pulse', level: 2, timer: 0, angle: 0, t: 0 },
+    { id: 'orbit', level: 2, timer: 0, angle: 0, t: 0 },
+    { id: 'arc', level: 2, timer: 0, angle: 0, t: 0 },
+    { id: 'nova', level: 2, timer: 0, angle: 0, t: 0 },
+    { id: 'seeker', level: 2, timer: 0, angle: 0, t: 0 },
+  ];
+  game.cards = [];
+  const draft = generateCards(game);
+  if (draft.some((c) => c.kind === 'weapon' && c.levelText === 'NEW WEAPON')) {
+    errors.push('voidPact still offers new weapons past the 5-slot cap');
+  }
+
+  // ---- new weapons fire without exploding: force them all + run 10s ----
+  game.relic = null;
+  game.recomputeStats();
+  game.godMode = true;
+  game.player.weapons = ['rail', 'tether', 'mirror', 'glacierFan'].map((id) => ({
+    id,
+    level: WEAPONS[id].maxLevel,
+    timer: 0.2,
+    angle: 0,
+    t: 0,
+  }));
+  for (let i = 0; i < 10 * 60; i++) {
+    if (game.state === 'levelup') game.chooseCard(0);
+    else if (game.state === 'relicpick') game.chooseRelic(0);
+    game.update(STEP);
+  }
+  if (!Number.isFinite(game.player.hp) || !Number.isFinite(game.score)) errors.push('NaN in new-weapons soak test');
   return errors;
 }
 
@@ -236,6 +323,10 @@ console.log(e1.length ? e1.map((e) => '  FAIL: ' + e).join('\n') : '  OK');
 console.log('\nTEST 2: meta shop + perks + phoenix revive');
 const e2 = testMetaAndShop();
 console.log(e2.length ? e2.map((e) => '  FAIL: ' + e).join('\n') : '  OK');
+
+console.log('\nTEST 2.5: relics + drone bay (v1.3)');
+const e25 = testRelicsAndDrones();
+console.log(e25.length ? e25.map((e) => '  FAIL: ' + e).join('\n') : '  OK');
 
 console.log('\nTEST 3: full god run to wave 15 + victory + endless');
 const r3 = runBot(60 * 22, true, true, true);

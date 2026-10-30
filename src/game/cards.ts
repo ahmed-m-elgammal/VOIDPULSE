@@ -11,24 +11,32 @@ const MAX_PASSIVE_KINDS = 7;
 export function generateCards(g: Game): CardOption[] {
   const p = g.player;
   const candidates: CardOption[] = [];
+  // v1.3 VOID PACT relic: tighter weapon bay, wider module rack
+  const maxWeapons = g.relic === 'voidPact' ? MAX_WEAPONS - 1 : MAX_WEAPONS;
+  const maxPassives = g.relic === 'voidPact' ? MAX_PASSIVE_KINDS + 1 : MAX_PASSIVE_KINDS;
 
   // evolutions (highest priority, epic)
   for (const w of p.weapons) {
     const evo = EVO_MAP[w.id];
     if (evo && w.level >= WEAPONS[w.id].maxLevel) {
-      const passiveLv = p.passives[evo.req] ?? 0;
-      if (passiveLv >= 2) {
-        const into = WEAPONS[evo.into];
-        candidates.push({
-          kind: 'evolve',
-          refId: w.id,
-          title: `EVOLVE: ${into.name}`,
-          desc: into.desc,
-          rarity: 'epic',
-          levelText: 'WEAPON EVOLUTION',
-          color: into.color,
-        });
+      if (evo.reqWeapon) {
+        // dual path: needs its partner weapon at the listed level (GLACIER FAN)
+        const partner = p.weapons.find((x) => x.id === evo.reqWeapon);
+        if (!partner || partner.level < (evo.reqWeaponLevel ?? 1)) continue;
+      } else {
+        const passiveLv = p.passives[evo.req ?? ''] ?? 0;
+        if (passiveLv < 2) continue;
       }
+      const into = WEAPONS[evo.into];
+      candidates.push({
+        kind: 'evolve',
+        refId: w.id,
+        title: `EVOLVE: ${into.name}`,
+        desc: into.desc,
+        rarity: 'epic',
+        levelText: evo.reqWeapon ? 'DUAL EVOLUTION' : 'WEAPON EVOLUTION',
+        color: into.color,
+      });
     }
   }
 
@@ -49,7 +57,7 @@ export function generateCards(g: Game): CardOption[] {
   }
 
   // new weapons
-  if (p.weapons.length < MAX_WEAPONS) {
+  if (p.weapons.length < maxWeapons) {
     for (const def of Object.values(WEAPONS)) {
       if (def.isEvolved) continue;
       if (p.weapons.some((w) => w.id === def.id)) continue;
@@ -79,7 +87,7 @@ export function generateCards(g: Game): CardOption[] {
         levelText: `Lv ${lv} → ${lv + 1}`,
         color: def.color,
       });
-    } else if (lv === 0 && ownedKinds < MAX_PASSIVE_KINDS) {
+    } else if (lv === 0 && ownedKinds < maxPassives) {
       candidates.push({
         kind: 'passive',
         refId: def.id,

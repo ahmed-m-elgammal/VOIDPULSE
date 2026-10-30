@@ -10,6 +10,12 @@ export function startWave(g: Game, wave: number): void {
   g.waveHits = 0;
   g.dmgScale = WAVE_CONFIG.dmgScale(wave);
   g.rageT = 0;
+  g.decayAnnounced = false;
+  // v1.3 — AEGIS drone re-arms its 1-hit barrier at every wave start
+  if (g.companion?.id === 'aegis' && g.player.shield <= 0 && g.player.hp > 0) {
+    g.player.shield = 1;
+    g.addText(g.player.x, g.player.y - 46, 'AEGIS BARRIER ONLINE', '#9adcff', 12, true);
+  }
   const isBoss = BOSS_WAVES[wave] !== undefined || (wave > 15 && (wave - 15) % 5 === 0);
   g.waveState = 'intro';
   g.waveTimer = isBoss ? 0 : WAVE_CONFIG.duration(wave);
@@ -50,6 +56,12 @@ export function updateWaves(g: Game, dt: number): void {
         createBoss(g, g.pendingBoss.idx, g.pendingBoss.hpMult);
         g.pendingBoss = null;
       }
+      // v1.3 — wave 3: the void makes its offer. One relic, no refunds.
+      if (g.wave === 3 && !g.relicOffered) {
+        g.relicOffered = true;
+        g.openRelicPick();
+        return;
+      }
     }
     return;
   }
@@ -77,6 +89,21 @@ export function updateWaves(g: Game, dt: number): void {
       g.rageT += dt;
       if (g.rageT > 10) {
         for (const e of g.enemies) e.rage = Math.min(1.8, e.rage + dt * 0.08);
+      }
+      // v1.3 anti-stall valve — THE VOID HUNGERS: if cleanup drags past 30s
+      // (a mender + vampiric-elite heal stack can outheal a thin draft), the
+      // void starts eating the leftovers. Escalating decay beats any heal rate.
+      if (g.rageT > 30) {
+        if (!g.decayAnnounced) {
+          g.decayAnnounced = true;
+          g.addText(g.player.x, g.player.y - 60, 'THE VOID HUNGERS', '#c44dff', 16, true);
+          g.audio.sfx('bossRoar', 0.2, 1.4);
+          g.flashScreen('#c44dff', 0.2);
+        }
+        const ramp = 1 + Math.min(4, (g.rageT - 30) / 12); // bites at 1, escalates to 5 within a minute
+        for (const e of g.enemies) {
+          g.damageEnemy(e, (e.maxHp * 0.04 + 4) * ramp * dt, false, 'decay', true);
+        }
       }
     }
   } else if (g.waveState === 'breather') {

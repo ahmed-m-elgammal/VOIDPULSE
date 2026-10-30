@@ -140,6 +140,60 @@ export const WEAPONS: Record<string, WeaponDef> = {
     levelDesc: (lv) =>
       ['', '+1 pellet', '+1 damage', '+1 pellet, faster cycles', '+1 damage', ''][lv] ?? '',
   },
+  rail: {
+    id: 'rail',
+    name: 'Rail Driver',
+    desc: 'Charges a hyperkinetic slug that pierces everything on its line. All of it.',
+    color: '#e8ff6d',
+    maxLevel: 5,
+    evoReq: 'focus',
+    evoInto: 'railstorm',
+    kind: 'rail',
+    stats: (lv) => ({
+      cd: 2.6 - (lv - 1) * 0.18,
+      dmg: [0, 30, 36, 42, 50, 58][lv],
+      count: 1,
+    }),
+    levelDesc: (lv) =>
+      ['', '+6 damage', '+6 damage, faster charge', '+8 damage', '+8 damage, faster charge', ''][lv] ?? '',
+  },
+  tether: {
+    id: 'tether',
+    name: 'Tether Harpoon',
+    desc: 'Harpoons the nearest hostile and reels it in — it arrives damaged, stunned, and personal.',
+    color: '#e06dff',
+    maxLevel: 5,
+    evoReq: 'phantom',
+    evoInto: 'leviathanHook',
+    kind: 'tether',
+    stats: (lv) => ({
+      cd: 3.2 - (lv - 1) * 0.22,
+      dmg: [0, 18, 22, 26, 31, 36][lv],
+      radius: 380 + lv * 28, // cable range
+      stun: 0.5 + lv * 0.1,
+    }),
+    levelDesc: (lv) =>
+      ['', '+4 damage, longer cable', '+4 damage', '+5 damage, longer cable', '+5 damage, harder stun', ''][lv] ?? '',
+  },
+  mirror: {
+    id: 'mirror',
+    name: 'Mirror Blade',
+    desc: 'A sweeping arc of mirrored alloy — cuts the swarm and returns hostile fire to sender.',
+    color: '#cfe0ff',
+    maxLevel: 5,
+    evoReq: 'plating',
+    evoInto: 'prismWard',
+    kind: 'mirror',
+    stats: (lv) => ({
+      cd: 1.7 - (lv - 1) * 0.12,
+      dmg: [0, 16, 19, 23, 27, 32][lv],
+      radius: 105 + lv * 9,
+      spread: 1.5, // arc width (radians)
+      chains: 2, // bullets reflected per swing
+    }),
+    levelDesc: (lv) =>
+      ['', '+3 damage', 'wider arc, +4 damage', '+4 damage', 'faster swings, +5 damage', ''][lv] ?? '',
+  },
 
   // ---- EVOLUTIONS ----
   novaLance: {
@@ -248,23 +302,105 @@ export const WEAPONS: Record<string, WeaponDef> = {
     }),
     levelDesc: () => '',
   },
+  railstorm: {
+    id: 'railstorm',
+    name: 'RAILSTORM',
+    desc: 'EVOLVED. Three rail slugs fan out on every cycle. The wave becomes a corridor.',
+    color: '#f4ffa0',
+    maxLevel: 1,
+    isEvolved: true,
+    evoFrom: undefined as unknown as string,
+    kind: 'rail',
+    stats: () => ({
+      cd: 1.5,
+      dmg: 44,
+      count: 3,
+    }),
+    levelDesc: () => '',
+  },
+  leviathanHook: {
+    id: 'leviathanHook',
+    name: 'LEVIATHAN HOOK',
+    desc: 'EVOLVED. What it reels in, it slams — and the slam has a blast radius.',
+    color: '#f0a8ff',
+    maxLevel: 1,
+    isEvolved: true,
+    evoFrom: undefined as unknown as string,
+    kind: 'tether',
+    stats: () => ({
+      cd: 2.2,
+      dmg: 44,
+      radius: 540,
+      stun: 1.0,
+      aoe: 100,
+    }),
+    levelDesc: () => '',
+  },
+  prismWard: {
+    id: 'prismWard',
+    name: 'PRISM WARD',
+    desc: 'EVOLVED. A wide prism arc that catches almost everything — and answers in crits.',
+    color: '#eaf4ff',
+    maxLevel: 1,
+    isEvolved: true,
+    evoFrom: undefined as unknown as string,
+    kind: 'mirror',
+    stats: () => ({
+      cd: 1.15,
+      dmg: 40,
+      radius: 152,
+      spread: 2.2,
+      chains: 5,
+    }),
+    levelDesc: () => '',
+  },
+  glacierFan: {
+    id: 'glacierFan',
+    name: 'GLACIER FAN',
+    desc: 'EVOLVED. A blizzard of piercing shards. Everything it touches moves through syrup.',
+    color: '#baf0ff',
+    maxLevel: 1,
+    isEvolved: true,
+    evoFrom: undefined as unknown as string,
+    kind: 'glacier',
+    stats: () => ({
+      cd: 1.2,
+      dmg: 13,
+      count: 8,
+      bspeed: 540,
+      spread: 0.78,
+      pierce: 1,
+      slow: 0.4,
+    }),
+    levelDesc: () => '',
+  },
 };
 
-// fix evoFrom references (can't self-reference during literal creation)
-for (const [key, w] of Object.entries(WEAPONS)) {
-  if (w.isEvolved) {
-    (w as { evoFrom?: string }).evoFrom = key === 'novaLance' ? 'pulse' : key === 'cyclone' ? 'orbit' : key === 'tempest' ? 'arc' : key === 'seismic' ? 'nova' : key === 'hornet' ? 'seeker' : 'frost';
-  }
-}
-
-export const EVO_MAP: Record<string, { req: string; into: string }> = {
+/**
+ * Evolution map. Standard paths need their req passive at Lv2+.
+ * Dual paths (reqWeapon) need a partner weapon instead — GLACIER FAN binds
+ * Scatter Bolt to a Cryo Field that has reached Lv3.
+ */
+export const EVO_MAP: Record<string, { req?: string; into: string; reqWeapon?: string; reqWeaponLevel?: number }> = {
   pulse: { req: 'focus', into: 'novaLance' },
   orbit: { req: 'swift', into: 'cyclone' },
   arc: { req: 'capacitor', into: 'tempest' },
   nova: { req: 'might', into: 'seismic' },
   seeker: { req: 'magnet', into: 'hornet' },
   frost: { req: 'vitality', into: 'zeroField' },
+  rail: { req: 'focus', into: 'railstorm' },
+  tether: { req: 'phantom', into: 'leviathanHook' },
+  mirror: { req: 'plating', into: 'prismWard' },
+  scatter: { reqWeapon: 'frost', reqWeaponLevel: 3, into: 'glacierFan' },
 };
+
+// fix evoFrom references (can't self-reference during literal creation)
+for (const [key, w] of Object.entries(WEAPONS)) {
+  if (w.isEvolved) {
+    const base = Object.entries(EVO_MAP).find(([, e]) => e.into === key)?.[0];
+    if (base) (w as { evoFrom?: string }).evoFrom = base;
+  }
+}
 
 // ---------------- PASSIVES ----------------
 

@@ -91,6 +91,21 @@ export function fireWeapons(g: Game, dt: number): void {
   const p = g.player;
   if (p.hp <= 0) return;
   const od = p.overdrive > 0;
+  // v1.3 OVERCLOCK CORE relic: fire rate paid for in jams. While jammed the
+  // whole arsenal is silent — auras included. That's the bargain.
+  if (g.relic === 'overclock') {
+    if (g.relicJamT > 0) {
+      g.relicJamT -= dt;
+      return;
+    }
+    g.jamCycleT += dt;
+    if (g.jamCycleT >= 30) {
+      g.jamCycleT = 0;
+      g.relicJamT = 1.0;
+      g.addText(p.x, p.y - 34, 'WEAPONS JAMMED', '#ffb14d', 15, true);
+      g.audio.sfx('error');
+    }
+  }
   for (const w of p.weapons) {
     const def = WEAPONS[w.id];
     if (!def) continue;
@@ -344,6 +359,200 @@ export function fireWeapons(g: Game, dt: number): void {
         }
         break;
       }
+      case 'rail': {
+        w.timer -= dt;
+        if (w.timer <= 0) {
+          const tgt = nearestEnemy(g, p.x, p.y, 900);
+          if (tgt) {
+            w.timer = st.cd / p.stats.fireRateMult / (od ? 1.3 : 1);
+            const aim = leadAim(g, tgt, p.x, p.y, 2400);
+            const n = st.count ?? 1;
+            const crit = rollCrit(g);
+            const dmg = st.dmg * p.stats.damageMult * (od ? 1.5 : 1) * (crit ? p.stats.critMult : 1);
+            for (let i = 0; i < n; i++) {
+              const a = aim + (n === 1 ? 0 : (i - (n - 1) / 2) * 0.11);
+              fireRailBeam(g, a, dmg, def.color, crit);
+            }
+            g.shake(n > 1 ? 4 : 2.5);
+            g.audio.sfx('rail');
+          } else {
+            w.timer = 0.14;
+          }
+        }
+        break;
+      }
+      case 'tether': {
+        w.timer -= dt;
+        if (w.timer <= 0) {
+          const range = st.radius ?? 420;
+          const tgt = nearestEnemy(g, p.x, p.y, range);
+          if (tgt && tgt.spawnT <= 0) {
+            w.timer = st.cd / p.stats.fireRateMult / (od ? 1.3 : 1);
+            const dx = p.x - tgt.x;
+            const dy = p.y - tgt.y;
+            const d = Math.hypot(dx, dy) || 1;
+            // reel-in impulse: knock decays fast (pow 0.0025/s), so scale hard
+            const pull = Math.min(1500, d * 5);
+            tgt.knockX += (dx / d) * pull;
+            tgt.knockY += (dy / d) * pull;
+            tgt.stunT = Math.max(tgt.stunT, st.stun ?? 0.6);
+            const crit = rollCrit(g);
+            g.damageEnemy(
+              tgt,
+              st.dmg * p.stats.damageMult * (od ? 1.5 : 1) * (crit ? p.stats.critMult : 1),
+              crit,
+              'tether'
+            );
+            g.spawnArc(p.x, p.y, tgt.x, tgt.y, def.color);
+            g.spawnParticleBurst(tgt.x, tgt.y, def.color, 7, 150, 2.6);
+            // LEVIATHAN HOOK: the slam has a blast radius
+            if ((st.aoe ?? 0) > 0) {
+              const aoeR = st.aoe ?? 90;
+              g.spawnShock({
+                x: tgt.x,
+                y: tgt.y,
+                r: 8,
+                maxR: aoeR,
+                speed: aoeR / 0.16,
+                life: 0.2,
+                maxLife: 0.2,
+                color: def.color,
+                width: 4,
+                dmg: st.dmg * 0.5 * p.stats.damageMult * (od ? 1.5 : 1),
+                knock: 220,
+              });
+            }
+            g.audio.sfx('hook');
+          } else if (w.timer <= 0) {
+            w.timer = 0.16;
+          }
+        }
+        break;
+      }
+      case 'mirror': {
+        if (w.t > 0) w.t -= dt; // sweep visual life (renderer reads angle+t)
+        w.timer -= dt;
+        if (w.timer <= 0) {
+          const R = (st.radius ?? 110) * p.stats.areaMult;
+          const tgt = nearestEnemy(g, p.x, p.y, R + 80);
+          if (!tgt && g.ebullets.length === 0) {
+            w.timer = 0.12; // nothing to cut or catch: retry soon
+            break;
+          }
+          w.timer = st.cd / p.stats.fireRateMult / (od ? 1.3 : 1);
+          const aim = tgt ? Math.atan2(tgt.y - p.y, tgt.x - p.x) : Math.atan2(p.moveY, p.moveX);
+          w.angle = aim; // swing direction for the renderer
+          w.t = 0.22;
+          const half = (st.spread ?? 1.5) / 2;
+          const inArc = (x: number, y: number): boolean => {
+            const a = Math.atan2(y - p.y, x - p.x);
+            const diff = Math.abs(((a - aim + Math.PI * 3) % TAU) - Math.PI);
+            return diff <= half;
+          };
+          forEnemiesNear(g, p.x, p.y, R + 40, (e) => {
+            const d = Math.hypot(e.x - p.x, e.y - p.y);
+            if (d > R + e.radius) return;
+            if (!inArc(e.x, e.y)) return;
+            const crit = rollCrit(g);
+            g.damageEnemy(
+              e,
+              st.dmg * p.stats.damageMult * (od ? 1.5 : 1) * (crit ? p.stats.critMult : 1),
+              crit,
+              'mirror'
+            );
+          });
+          // reflect enemy bullets inside the arc as counter-fire
+          const maxReflect = st.chains ?? 2;
+          const prism = maxReflect >= 5; // PRISM WARD answers in crits
+          let reflected = 0;
+          for (const b of g.ebullets) {
+            if (reflected >= maxReflect) break;
+            if (b.dead || b.mine) continue;
+            if (Math.hypot(b.x - p.x, b.y - p.y) > R) continue;
+            if (!inArc(b.x, b.y)) continue;
+            b.dead = true;
+            reflected++;
+            const t2 = nearestEnemy(g, b.x, b.y, 720);
+            const ca = t2 ? Math.atan2(t2.y - b.y, t2.x - b.x) : Math.atan2(p.y - b.y, p.x - b.x) + Math.PI;
+            const crit = prism || rollCrit(g);
+            newBullet(g, {
+              x: b.x,
+              y: b.y,
+              vx: Math.cos(ca) * 560,
+              vy: Math.sin(ca) * 560,
+              r: 4,
+              dmg: st.dmg * 0.55 * p.stats.damageMult * (od ? 1.5 : 1) * (crit ? p.stats.critMult : 1),
+              crit,
+              pierce: prism ? 1 : 0,
+              life: 1.2,
+              kind: 'pulse',
+              homing: 2.6,
+              angle: ca,
+            });
+            g.spawnParticle(b.x, b.y, 0, 0, 0.25, 3, def.color);
+          }
+          if (reflected > 0) g.audio.sfx('select', 0.1, 1.2);
+          g.audio.sfx('swing');
+        }
+        break;
+      }
+      case 'glacier': {
+        // GLACIER FAN: scatter pattern + chill payload
+        w.timer -= dt;
+        if (w.timer <= 0) {
+          const tgt = nearestEnemy(g, p.x, p.y, 620);
+          if (tgt) {
+            w.timer = st.cd / p.stats.fireRateMult / (od ? 1.3 : 1);
+            const aim = leadAim(g, tgt, p.x, p.y, st.bspeed ?? 540);
+            const n = st.count ?? 8;
+            const spread = st.spread ?? 0.78;
+            for (let i = 0; i < n; i++) {
+              const a = aim + (n === 1 ? 0 : (i - (n - 1) / 2) * ((spread * 2) / (n - 1)));
+              const crit = rollCrit(g);
+              newBullet(g, {
+                x: p.x + Math.cos(a) * 14,
+                y: p.y + Math.sin(a) * 14,
+                vx: Math.cos(a) * (st.bspeed ?? 540),
+                vy: Math.sin(a) * (st.bspeed ?? 540),
+                r: 4,
+                dmg: st.dmg * p.stats.damageMult * (od ? 1.5 : 1) * (crit ? p.stats.critMult : 1),
+                crit,
+                pierce: st.pierce ?? 1,
+                life: 0.9,
+                kind: 'glacier',
+                slow: st.slow ?? 0.4,
+                angle: a,
+              });
+            }
+            g.audio.sfx('scatter', 0.1, 0.8);
+            g.shake(1);
+          } else {
+            w.timer = 0.14;
+          }
+        }
+        break;
+      }
+    }
+  }
+}
+
+/** RAIL DRIVER: instant hit-scan slug. Damages everything along the ray. */
+function fireRailBeam(g: Game, angle: number, dmg: number, color: string, crit: boolean): void {
+  const p = g.player;
+  const len = 920;
+  const nx = Math.cos(angle);
+  const ny = Math.sin(angle);
+  g.spawnBeam({ x: p.x, y: p.y, angle, len, life: 0.2, maxLife: 0.2, color, width: 9 });
+  for (const e of g.enemies) {
+    if (e.hp <= 0 || e.spawnT > 0 || e.ghostT > 0) continue;
+    const rx = e.x - p.x;
+    const ry = e.y - p.y;
+    const proj = rx * nx + ry * ny;
+    if (proj < 0 || proj > len) continue;
+    const perp = Math.abs(rx * ny - ry * nx);
+    if (perp < 12 + e.radius) {
+      g.damageEnemy(e, dmg, crit, 'rail');
+      g.spawnParticleBurst(e.x, e.y, color, 4, 140, 2.5);
     }
   }
 }
@@ -423,6 +632,11 @@ export function updateBullets(g: Game, dt: number): void {
               break;
             }
             g.damageEnemy(e, b.dmg, b.crit, 'bullet');
+            // glacier pellets chill what they touch
+            if (b.slow) {
+              if (e.slow < b.slow) e.slow = b.slow;
+              e.slowT = Math.max(e.slowT, 1.2);
+            }
             g.spawnParticleBurst(b.x, b.y, b.crit ? '#ffe066' : '#bfefff', 4, 130, 2.5);
             g.audio.sfx('hit');
             if (b.aoe > 0) {
@@ -950,7 +1164,9 @@ export function updateGems(g: Game, dt: number): void {
         g.audio.sfx('pickup', 0.14);
         g.spawnParticleBurst(gem.x, gem.y, '#6dff8c', 3, 90, 2);
       } else if (gem.kind === 'heal') {
-        const heal = Math.min(gem.value, p.maxHp - p.hp);
+        // VAMPIRE SIGIL: repair orbs restore half — kills pay the bills now
+        const val = g.relic === 'vampire' ? gem.value * 0.5 : gem.value;
+        const heal = Math.min(val, p.maxHp - p.hp);
         p.hp += heal;
         g.runHeals++;
         g.audio.sfx('pickupHeal');

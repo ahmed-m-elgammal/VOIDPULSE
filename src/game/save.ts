@@ -5,6 +5,7 @@ import type { LifeStats, MetaSave, Settings } from './types';
 import { META_PERKS } from './content';
 import { CONTRACT_POOL } from './economy';
 import { mutationIds } from './mutations';
+import { COMPANIONS } from './companions';
 
 const KEY = 'voidpulse_save_v2';
 const KEY_V1 = 'voidpulse_save_v1';
@@ -61,6 +62,8 @@ export function defaultMeta(): MetaSave {
     mutations: [],
     daily: defaultDaily(),
     achievements: {},
+    companionsOwned: [],
+    companionEquipped: '',
     settings: defaultSettings(),
   };
 }
@@ -117,6 +120,12 @@ export function loadMeta(): MetaSave {
     meta.mutations = [...new Set((parsed.mutations ?? []).filter((id) => mutIds.has(id)))];
     meta.daily = { ...defaultDaily(), ...(parsed.daily ?? {}) };
     meta.achievements = { ...(parsed.achievements ?? {}) };
+    // v1.3 — drone bay: only valid ids, equipped drone must be owned
+    const droneIds = new Set(COMPANIONS.map((c) => c.id));
+    meta.companionsOwned = [...new Set((parsed.companionsOwned ?? []).filter((id) => droneIds.has(id)))];
+    if (!droneIds.has(meta.companionEquipped) || !meta.companionsOwned.includes(meta.companionEquipped)) {
+      meta.companionEquipped = '';
+    }
     // sanitize settings
     meta.settings.shake = Math.max(0, Math.min(1, meta.settings.shake));
     meta.settings.volMaster = Math.max(0, Math.min(1, meta.settings.volMaster));

@@ -11,6 +11,7 @@ export type GameState =
   | 'achievements'
   | 'playing'
   | 'levelup'
+  | 'relicpick'
   | 'paused'
   | 'gameover'
   | 'victory';
@@ -319,15 +320,59 @@ export interface Bullet {
   dmg: number;
   pierce: number;
   life: number;
-  kind: 'pulse' | 'seeker' | 'lance' | 'scatter' | 'shard';
+  kind: 'pulse' | 'seeker' | 'lance' | 'scatter' | 'shard' | 'glacier';
   crit: boolean;
   homing: number;
   aoe: number;
   angle: number;
   trailT: number;
+  slow?: number; // glacier pellets chill on hit (0..1)
   tgtEid?: number; // cached homing target (validated by eid)
   retargetT?: number; // time until next target search
   dead?: boolean;
+}
+
+/** Instant line visual — Rail Driver slugs. Damage is resolved at fire time. */
+export interface Beam {
+  x: number;
+  y: number;
+  angle: number;
+  len: number;
+  life: number;
+  maxLife: number;
+  color: string;
+  width: number;
+  dead?: boolean;
+}
+
+/** v1.3 — run-defining artifact. Offered at wave 3; exactly one per run. */
+export interface RelicDef {
+  id: string;
+  name: string;
+  desc: string; // the benefit
+  trade: string; // the cost — every relic takes as it gives
+  color: string;
+  glyph: string;
+}
+
+/** v1.3 — market drone. Bought once, deployed every run, one at a time. */
+export interface CompanionDef {
+  id: string;
+  name: string;
+  desc: string;
+  color: string;
+  currency: Currency;
+  price: number;
+}
+
+export interface CompanionState {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number; // orbit phase around the player
+  timer: number; // action cooldown
 }
 
 export interface EBullet {
@@ -438,13 +483,13 @@ export interface WeaponStats {
   cd: number;
   dmg: number;
   count?: number;
-  radius?: number;
-  chains?: number;
+  radius?: number; // orbit radius / nova ring / tether cable range / mirror reach
+  chains?: number; // arc jumps / mirror bullet reflections
   slow?: number;
   dps?: number;
   rot?: number;
   knock?: number;
-  spread?: number;
+  spread?: number; // scatter cone / mirror arc width
   bspeed?: number;
   aoe?: number;
   stun?: number;
@@ -462,7 +507,7 @@ export interface WeaponDef {
   evoInto?: string;
   evoFrom?: string; // base weapon id (for evolved weapons)
   isEvolved?: boolean;
-  kind: 'pulse' | 'orbit' | 'arc' | 'nova' | 'seeker' | 'frost' | 'scatter' | 'lance';
+  kind: 'pulse' | 'orbit' | 'arc' | 'nova' | 'seeker' | 'frost' | 'scatter' | 'lance' | 'rail' | 'tether' | 'mirror' | 'glacier';
   stats: (lv: number) => WeaponStats;
   levelDesc: (lv: number) => string;
 }
@@ -542,6 +587,9 @@ export interface MetaSave {
   daily: DailyRecord;
   // v1.2 — unlocked achievements (id -> unlock epoch ms)
   achievements: Record<string, number>;
+  // v1.3 — drone bay (bought once, one deployed per run)
+  companionsOwned: string[];
+  companionEquipped: string;
   // accessibility & audio settings
   settings: Settings;
 }

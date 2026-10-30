@@ -4,9 +4,11 @@ import type { Game } from './game';
 import type { ColorblindMode, Enemy, Player } from './types';
 import { TAU, clamp, fmtScore, fmtTime } from './utils';
 import { WEAPONS, WORLD_H, WORLD_W } from './content';
-import { drawMenus, drawLevelUpCards } from './renderUI';
+import { drawMenus, drawLevelUpCards, drawRelicPick } from './renderUI';
 import { skinOf } from './skins';
 import { MUTATIONS } from './mutations';
+import { relicOf } from './relics';
+import { companionOf } from './companions';
 
 const MONO = `ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace`;
 
@@ -341,7 +343,12 @@ export class Renderer {
     g.buttons.length = 0;
 
     const inRun =
-      g.state === 'playing' || g.state === 'levelup' || g.state === 'paused' || g.state === 'gameover' || g.state === 'victory';
+      g.state === 'playing' ||
+      g.state === 'levelup' ||
+      g.state === 'relicpick' ||
+      g.state === 'paused' ||
+      g.state === 'gameover' ||
+      g.state === 'victory';
 
     if (inRun) {
       this.drawWorld(g);
@@ -365,6 +372,10 @@ export class Renderer {
       case 'levelup':
         this.drawHUD(g);
         drawLevelUpCards(this, g);
+        break;
+      case 'relicpick':
+        this.drawHUD(g);
+        drawRelicPick(this, g);
         break;
       case 'paused':
         this.drawHUD(g);
@@ -496,6 +507,32 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
+    // beams (rail slugs) — hot core over a soft glow
+    for (const bm of g.beams) {
+      const a = clamp(bm.life / bm.maxLife, 0, 1);
+      const ca = Math.cos(bm.angle);
+      const sa = Math.sin(bm.angle);
+      const mx = bm.x + ca * bm.len * 0.5;
+      const my = bm.y + sa * bm.len * 0.5;
+      ctx.globalCompositeOperation = 'lighter';
+      this.drawGlow(mx, my, Math.min(160, bm.len * 0.3), bm.color, a * 0.3);
+      ctx.strokeStyle = bm.color;
+      ctx.globalAlpha = a * 0.9;
+      ctx.lineWidth = Math.max(1.5, bm.width * a);
+      ctx.beginPath();
+      ctx.moveTo(bm.x, bm.y);
+      ctx.lineTo(bm.x + ca * bm.len, bm.y + sa * bm.len);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1, bm.width * 0.3 * a);
+      ctx.beginPath();
+      ctx.moveTo(bm.x, bm.y);
+      ctx.lineTo(bm.x + ca * bm.len, bm.y + sa * bm.len);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
     // player bullets
     ctx.globalCompositeOperation = 'lighter';
     for (const b of g.bullets) {
@@ -526,6 +563,14 @@ export class Renderer {
         ctx.lineTo(-4, -3.4);
         ctx.closePath();
         ctx.fill();
+        ctx.restore();
+      } else if (b.kind === 'glacier') {
+        this.drawGlow(b.x, b.y, 11, '#8fd8ff', 0.7);
+        ctx.fillStyle = '#dff4ff';
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(b.angle);
+        ctx.fillRect(-4, -1.8, 8, 3.6);
         ctx.restore();
       } else {
         this.drawGlow(b.x, b.y, 13, b.crit ? '#ffe066' : '#4de8ff', 0.8);
@@ -620,6 +665,10 @@ export class Renderer {
     if (g.player.hp > 0 || g.deathT > 0) {
       this.drawPlayer(g);
     }
+
+    // v1.3 — companion drone + mirror blade sweep
+    this.drawCompanion(g);
+    this.drawMirrorSweep(g);
 
     // orbit blades (drawn with player weapons)
     this.drawOrbitBlades(g);
@@ -831,6 +880,89 @@ export class Renderer {
         ctx.restore();
       }
     }
+  }
+
+  /** v1.3 — MIRROR BLADE / PRISM WARD: bright sector that fades over the swing life */
+  private drawMirrorSweep(g: Game): void {
+    const ctx = this.ctx;
+    const p = g.player;
+    for (const w of p.weapons) {
+      const def = WEAPONS[w.id];
+      if (!def || def.kind !== 'mirror' || w.t <= 0) continue;
+      const st = def.stats(w.level);
+      const R = (st.radius ?? 110) * p.stats.areaMult;
+      const half = (st.spread ?? 1.5) / 2;
+      const k = clamp(w.t / 0.22, 0, 1);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = k * 0.5;
+      ctx.fillStyle = def.color;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.arc(p.x, p.y, R, w.angle - half, w.angle + half);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = k * 0.9;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, R * (1.04 - k * 0.12), w.angle - half * (1 - k * 0.3), w.angle + half * (1 - k * 0.3));
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  /** v1.3 — market drone orbiting the hull */
+  private drawCompanion(g: Game): void {
+    const c = g.companion;
+    if (!c) return;
+    const def = companionOf(c.id);
+    if (!def) return;
+    const ctx = this.ctx;
+    // tether to the hull
+    ctx.globalAlpha = 0.22 + Math.sin(this.t * 3) * 0.08;
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(g.player.x, g.player.y);
+    ctx.lineTo(c.x, c.y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    this.drawGlow(c.x, c.y, 16, def.color, 0.6);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(this.t * 2.2);
+    ctx.strokeStyle = def.color;
+    ctx.fillStyle = 'rgba(8,14,26,0.9)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    if (c.id === 'lumen') {
+      // LUMEN: attack triangle
+      ctx.moveTo(0, -7.5);
+      ctx.lineTo(7, 5.5);
+      ctx.lineTo(-7, 5.5);
+      ctx.closePath();
+    } else if (c.id === 'aegis') {
+      // AEGIS: guard hexagon
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU;
+        const px = Math.cos(a) * 7.2;
+        const py = Math.sin(a) * 7.2;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    } else {
+      // MAGNETITE: tractor diamond
+      ctx.moveTo(0, -8.5);
+      ctx.lineTo(6.5, 0);
+      ctx.lineTo(0, 8.5);
+      ctx.lineTo(-6.5, 0);
+      ctx.closePath();
+    }
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawEnemy(e: Enemy): void {
@@ -1303,9 +1435,9 @@ export class Renderer {
     ctx.fillStyle = '#c9b8ff';
     ctx.fillRect(hx + 48, hy + 58, 90 * frac2, 4);
 
-    // v1.2 mutation tags (top-left, below bp sliver)
+    // v1.2 mutation tags + v1.3 relic chip (top-left, below bp sliver)
+    let tagY = hy + 76;
     if (g.runMutations.length > 0) {
-      let tagY = hy + 76;
       ctx.font = font(9, 800);
       ctx.textAlign = 'left';
       for (const id of g.runMutations) {
@@ -1313,6 +1445,15 @@ export class Renderer {
         ctx.fillStyle = md?.color ?? '#ffffff';
         ctx.fillText(`▲ ${md?.name ?? id}`, hx + 48, tagY);
         tagY += 13;
+      }
+    }
+    if (g.relic) {
+      const rd = relicOf(g.relic);
+      if (rd) {
+        ctx.font = font(9, 800);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = rd.color;
+        ctx.fillText(`★ RELIC — ${rd.name}`, hx + 48, tagY);
       }
     }
 
