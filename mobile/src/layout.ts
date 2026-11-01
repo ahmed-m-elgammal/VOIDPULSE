@@ -1,11 +1,11 @@
 /**
  * VOIDPULSE MOBILE — shared layout: viewport size, safe-area insets
- * (read from the CSS env() probe div), and on-screen action button anchors.
+ * (read from the CSS env() probe div), and the dash button anchor.
  */
 
 export let viewW = 0, viewH = 0;
 export let insetT = 0, insetR = 0, insetB = 0, insetL = 0;
-export let dashX = 0, dashY = 0, odX = 0, odY = 0;
+export let dashX = 0, dashY = 0;
 export let dpr = 1;
 
 let probe: HTMLElement | null = null;
@@ -33,6 +33,4 @@ export function recompute(): void {
   const right = viewW - insetR - margin;
   dashX = right - 30;
   dashY = bottom - 30;
-  odX = right - 108;
-  odY = bottom - 30;
 }

@@ -1,38 +1,23 @@
 /**
- * VOIDPULSE MOBILE — boot glue.
- * Order: save → layout → render ctx → bake sprites → ports → input →
- * screens → loop. Deep links (?state=run|garage|perk|over, ?debug=1) are
- * development-only helpers.
+ * VOIDPULSE MOBILE — boot glue (v1.6.0 "MIRROR").
+ * Order: core runtime (real Game + save) → layout → render ctx → input →
+ * screens (binds flow hooks + bakes sprites from CORE defs) → loop.
+ * Deep links (?state=run|garage, ?debug=1) are development-only helpers.
  */
-import { loadSave, save } from './save';
+import { createRuntime, rt } from './bridge';
 import { initLayout, recompute } from './layout';
 import { initRender, resizeRender } from './ui/render';
-import { bakeAll } from './sprites';
-import { PALETTES } from './palette';
-import { applyVolumes } from './audio';
-import { setHaptics } from './haptics';
 import { initInput, consumePause } from './input';
-import { initScreens, openPauseAuto, startRun, openGarage, openPerkModal, finishRun } from './ui/screens';
+import { initScreens, openPauseAuto, startRun, openGarage } from './ui/screens';
 import { startLoop, fps } from './loop';
-import * as W from './sim/world';
-import * as P from './sim/player';
 
 function boot(): void {
-  loadSave();
+  createRuntime();
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const probe = document.getElementById('safe-probe') as HTMLElement;
   initLayout(probe);
   initRender(canvas);
-
-  // palette + sprite bake
-  const pal = PALETTES[save.settings.palette] || PALETTES[0];
-  document.documentElement.style.setProperty('--acc', pal.css);
-  bakeAll(pal);
-
-  // ports
-  applyVolumes(save.settings.master, save.settings.sfx, save.settings.music);
-  setHaptics(save.settings.haptics);
 
   initInput(canvas);
   initScreens();
@@ -44,35 +29,38 @@ function boot(): void {
     setTimeout(() => { recompute(); resizeRender(); }, 250);
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && W.state === 2) openPauseAuto(); // ST_RUNNING
+    if (document.hidden && rt.game.state === 'playing') openPauseAuto();
   });
+
+  // pause hotkey from the keyboard fallback
+  setInterval(() => {
+    if (consumePause() && rt.game.state === 'playing') openPauseAuto();
+  }, 50);
 
   // dev deep links
   const q = new URLSearchParams(location.search);
   const s = q.get('state');
   if (s === 'run') startRun();
   else if (s === 'garage') openGarage();
-  else if (s === 'perk') { startRun(); P.debugForceLevel(); openPerkModal(); }
-  else if (s === 'over') { startRun(); finishRun(false); }
 
   if (q.get('debug')) {
     const dbg = document.getElementById('dbg') as HTMLElement;
     dbg.hidden = false;
     setInterval(() => {
-      dbg.textContent = fps + 'FPS · E' + W.eCount + ' B' + W.bCount + ' G' + W.gCount + ' P' + W.pCount;
+      const g = rt.game;
+      dbg.textContent = fps + 'FPS · E' + g.enemies.length + ' B' + g.bullets.length
+        + ' EB' + g.ebullets.length + ' G' + g.gems.length
+        + ' · W' + g.wave + ' K' + g.kills;
     }, 500);
     // dev inspection hook (debug builds only)
     (window as unknown as Record<string, unknown>).__vp = {
-      score: () => W.score, kills: () => W.kills, wave: () => W.wave,
-      rt: () => W.runTime, ec: () => W.eCount, spawning: () => W.waveSpawning,
-      budget: () => W.waveBudget, inter: () => W.waveInter,
+      game: rt.game,
+      score: () => rt.game.score,
+      kills: () => rt.game.kills,
+      wave: () => rt.game.wave,
+      rt: () => rt.game.time,
     };
   }
 }
-
-// pause hotkey from the keyboard fallback
-setInterval(() => {
-  if (consumePause() && W.state === 2) openPauseAuto();
-}, 50);
 
 boot();

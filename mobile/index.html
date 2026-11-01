@@ -56,6 +56,7 @@
     align-items:center; justify-content:center; gap:8px; text-align:center; border-radius:14px;
     background:var(--panel); border:1px solid var(--acc-dim); color:var(--txt); font:inherit;
     backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); transition:transform .07s ease, box-shadow .12s ease, border-color .12s; }
+  .perk-card .ptag { font-size:9px; letter-spacing:.28em; opacity:.85; }
   .perk-card .pname { font-size:13px; font-weight:700; letter-spacing:.12em; color:var(--acc); }
   .perk-card .pdesc { font-size:11px; opacity:.8; line-height:1.55; }
   .perk-card:active { transform:scale(.95); border-color:var(--acc); box-shadow:0 0 26px var(--acc-dim); }
@@ -121,12 +122,13 @@
   <div class="sub">MOBILE</div>
   <div style="height:8px"></div>
   <button id="btn-start" class="btn primary" style="min-width:230px">▶ Start Run</button>
+  <button id="btn-daily" class="btn" style="min-width:230px">☠ Daily Breach</button>
   <div class="btnrow">
     <button id="btn-garage" class="btn">Garage</button>
     <button id="btn-settings-title" class="btn">Settings</button>
   </div>
   <div id="title-bests" class="hint"></div>
-  <div id="title-ver" class="hint">v1.5.0 — zero-alloc touch engine</div>
+  <div id="title-ver" class="hint">v1.6.0-alpha — MIRROR core · the real game</div>
 </section>
 
 <!-- GARAGE -->
@@ -137,14 +139,15 @@
     <div id="garage-cores">◆ 0</div>
   </div>
   <div id="garage-track"></div>
-  <div class="hint">SWIPE TO BROWSE HULLS · CORES BANKED FROM EVERY RUN</div>
+  <div class="hint">SWIPE TO BROWSE SKINS · CORES &amp; PRISMS FROM EVERY RUN</div>
 </section>
 
 <!-- PERK MODAL -->
 <section id="modal-perk" class="screen dim" hidden>
   <div id="perk-title">◆ LEVEL UP</div>
   <div id="perk-cards"></div>
-  <div class="hint">TAP A MODULE TO INSTALL</div>
+  <button id="btn-reroll" class="btn" hidden>⟳ Reroll</button>
+  <div class="hint">TAP A CARD TO CHOOSE</div>
 </section>
 
 <!-- PAUSE / SETTINGS DRAWER -->
@@ -180,6 +183,7 @@
     <div class="cell"><b id="go-time">0:00</b><span>TIME</span></div>
   </div>
   <div id="go-cores" class="hint" style="color:#ffe066;font-size:13px">◆ +0 CORES BANKED</div>
+  <button id="btn-continue-endless" class="btn primary" style="min-width:240px" hidden>∞ Continue Endless</button>
   <button id="btn-restart" class="btn primary" style="min-width:240px">↻ Restart Run</button>
   <div class="btnrow">
     <button id="btn-go-garage" class="btn">Garage</button>

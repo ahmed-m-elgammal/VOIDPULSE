@@ -44,6 +44,27 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "no-useless-escape": "off",
   },
 }, {
+  // MIRROR rule (MOBILE_PARITY_PLAN.md §1.1): the mobile shell imports ONLY
+  // the pure core (src/game logic) — never the desktop renderer/UI/React.
+  files: ["mobile/src/**/*.ts"],
+  rules: {
+    "no-restricted-imports": ["error", {
+      patterns: [{
+        group: [
+          "**/src/game/render",
+          "**/src/game/renderUI",
+          "**/src/components/**",
+          "**/src/app/**",
+          "**/src/lib/**",
+          "**/src/hooks/**",
+          "react", "react-dom",
+          "next", "next/**",
+        ],
+        message: "MIRROR rule: mobile may import only pure core modules (src/game logic). See MOBILE_PARITY_PLAN.md §1.1.",
+      }],
+    }],
+  },
+}, {
   ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills"]
 }];
 
