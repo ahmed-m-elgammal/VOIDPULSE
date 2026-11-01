@@ -55,3 +55,7 @@ server.log
 # local runtime artifacts
 tool-results/
 db/*.db
+
+# voidpulse mobile build artifacts
+mobile/dist/
+public/m/
